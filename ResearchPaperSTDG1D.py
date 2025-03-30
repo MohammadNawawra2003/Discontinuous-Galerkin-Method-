@@ -1,24 +1,60 @@
 import numpy as np
-from scipy.special import roots_legendre, jacobi # For edge quadrature and potential basis
+from scipy.special import roots_legendre, jacobi # Using SciPy for quadrature points
 import matplotlib.pyplot as plt
 import matplotlib.tri as tri
-# Optional: Consider using quadpy for robust triangle quadrature
-# try:
-#     import quadpy
-# except ImportError:
-#     print("Warning: quadpy library not found. Using placeholder quadrature.")
-#     quadpy = None
+# Consider using quadpy for more robust/varied triangle quadrature rules if needed
+# import quadpy
 
-# --- Constants and Parameters ---
-P_ORDER = 3 # Polynomial degree as specified
-N_P = (P_ORDER + 1) * (P_ORDER + 2) // 2 # Number of basis functions/nodes for P=3 -> 10
+# --- Configuration ---
+P_ORDER = 3  # Polynomial degree for basis functions
+N_DOF_PER_ELEMENT = (P_ORDER + 1) * (P_ORDER + 2) // 2  # Dofs per element (e.g., 10 for P=3)
 
-# --- (Code Task 1.1) Reference Element Setup ---
-# We use the reference triangle K_ref with vertices (0,0), (1,0), (0,1) in (xi, eta)
+# --- Reference Element Definition (Triangle: (0,0), (1,0), (0,1)) ---
 
-def basis_functions(xi, eta, p_order=P_ORDER):
+def evaluate_reference_basis(xi, eta, p_order=P_ORDER):
     """
-    Evaluates the P_ORDER-th degree basis functions at reference point (xi, eta).
+    Evaluates basis functions at a point (xi, eta) on the reference triangle.
+
+    Args:
+        xi (float): Reference coordinate (in [0, 1]).
+        eta (float): Reference coordinate (in [0, 1]).
+        p_order (int): Polynomial order.
+
+    Returns:
+        np.ndarray: Array of basis values, shape (N_DOF_PER_ELEMENT,).
+
+    NOTE/TODO: This is a PLACEHOLDER using simple monomials (1, xi, eta, xi^2, ...).
+               This is NOT an orthogonal or nodal basis. Replace with a proper
+               implementation (e.g., using mapped Jacobi polynomials or a specific
+               nodal basis set like warp-and-blend) for actual DG calculations.
+    """
+    num_dofs = (p_order + 1) * (p_order + 2) // 2
+    # Check bounds with a small tolerance
+    if not (-1e-9 <= xi <= 1.0 + 1e-9 and -1e-9 <= eta <= 1.0 + 1e-9 and xi + eta <= 1.0 + 1e-9):
+        # Pass silently for now, could indicate issues with quadrature points
+        pass
+
+    basis_vals = np.zeros(num_dofs)
+    current_dof = 0
+    for degree_sum in range(p_order + 1):
+        for i in range(degree_sum + 1):
+            j = degree_sum - i
+            if current_dof < num_dofs:
+                # Use np.power for potentially better handling of 0^0 (though still check)
+                term_xi = np.power(xi, i) if i > 0 else (1.0 if abs(xi) < 1e-15 and i == 0 else 1.0) # Handle 0^0=1
+                term_eta = np.power(eta, j) if j > 0 else (1.0 if abs(eta) < 1e-15 and j == 0 else 1.0) # Handle 0^0=1
+                basis_vals[current_dof] = term_xi * term_eta
+                current_dof += 1
+            else:
+                # This break should technically not be needed if num_dofs is correct
+                break
+    if current_dof != num_dofs:
+        raise RuntimeError(f"Internal logic error: Basis function count mismatch. Expected {num_dofs}, generated {current_dof}")
+    return basis_vals
+
+def evaluate_reference_basis_gradients(xi, eta, p_order=P_ORDER):
+    """
+    Evaluates gradients (d/dxi, d/deta) of basis functions at (xi, eta) on ref triangle.
 
     Args:
         xi (float): Reference coordinate xi.
@@ -26,692 +62,502 @@ def basis_functions(xi, eta, p_order=P_ORDER):
         p_order (int): Polynomial order.
 
     Returns:
-        np.ndarray: Array of shape (N_P,) containing basis function values phi_j(xi, eta).
+        np.ndarray: Gradients array, shape (N_DOF_PER_ELEMENT, 2). Columns are [d/dxi, d/deta].
 
-    NOTE: This is a PLACEHOLDER. Replace with actual basis function implementation
-          (e.g., using Jacobi polynomials on transformed coordinates as in Hesthaven
-           & Warburton Ch 7, or a nodal basis if using specific node locations).
-          For P=3, N_P = 10.
+    NOTE/TODO: This is a PLACEHOLDER matching the monomial basis above.
+               Replace with gradients corresponding to your chosen basis set.
     """
-    n_p = (p_order + 1) * (p_order + 2) // 2
-    # Check if point is approximately within the reference triangle
+    num_dofs = (p_order + 1) * (p_order + 2) // 2
     if not (-1e-9 <= xi <= 1.0 + 1e-9 and -1e-9 <= eta <= 1.0 + 1e-9 and xi + eta <= 1.0 + 1e-9):
-         # print(f"Warning: Point ({xi}, {eta}) potentially outside reference triangle.")
-         # Depending on quadrature point generation, points might be exactly on boundary
-         pass # Allow points very close to or on the boundary
+        pass # Allow points near boundary
 
-    # --- !!! REPLACE THIS PLACEHOLDER IMPLEMENTATION !!! ---
-    # Example using monomials (NOT ORTHOGONAL - just for structure)
-    vals = np.zeros(n_p)
-    count = 0
-    for i in range(p_order + 1):
-        for j in range(p_order - i + 1):
-            if count < n_p:
-                # Handle potential 0^0 case, define as 1
-                term_xi = 1.0 if i == 0 and abs(xi) < 1e-15 else xi**i
-                term_eta = 1.0 if j == 0 and abs(eta) < 1e-15 else eta**j
-                vals[count] = term_xi * term_eta
-                count += 1
-            else: break # Should not happen if n_p is correct
-    # For a real implementation, use orthogonal polynomials (e.g., Koornwinder, Dubiner)
-    # or a nodal basis evaluated at (xi, eta).
-    # --- !!! END PLACEHOLDER !!! ---
+    basis_grads = np.zeros((num_dofs, 2))
+    current_dof = 0
+    for degree_sum in range(p_order + 1):
+        for i in range(degree_sum + 1):
+            j = degree_sum - i
+            if current_dof < num_dofs:
+                # Pre-calculate powers carefully to handle 0^(negative) from derivative
+                xi_pow_i = np.power(xi, i) if i > 0 else (1.0 if abs(xi) < 1e-15 and i == 0 else 1.0)
+                eta_pow_j = np.power(eta, j) if j > 0 else (1.0 if abs(eta) < 1e-15 and j == 0 else 1.0)
 
-    # Normalize or ensure properties if using a specific basis type
-    # E.g., for nodal: vals[j] = 1.0 if (xi, eta) is node j, else 0.0 (requires node coords)
-    if count != n_p:
-        raise ValueError(f"Basis function count mismatch: expected {n_p}, got {count}")
-    return vals
+                xi_pow_im1 = np.power(xi, i-1) if i > 1 else (1.0 if i == 1 else 0.0)
+                eta_pow_jm1 = np.power(eta, j-1) if j > 1 else (1.0 if j == 1 else 0.0)
 
+                # d/dxi (term is i * xi^(i-1) * eta^j)
+                grad_xi = i * xi_pow_im1 * eta_pow_j if i > 0 else 0.0
+                # d/deta (term is xi^i * j * eta^(j-1))
+                grad_eta = xi_pow_i * j * eta_pow_jm1 if j > 0 else 0.0
 
-def basis_gradients(xi, eta, p_order=P_ORDER):
+                basis_grads[current_dof, 0] = grad_xi
+                basis_grads[current_dof, 1] = grad_eta
+                current_dof += 1
+            else:
+                break
+    if current_dof != num_dofs:
+        raise RuntimeError(f"Internal logic error: Basis gradient count mismatch. Expected {num_dofs}, generated {current_dof}")
+    return basis_grads
+
+# --- Quadrature Rules ---
+
+def get_triangle_quadrature_rule(required_degree):
     """
-    Evaluates the gradients (d/dxi, d/deta) of the basis functions at (xi, eta).
+    Returns 2D quadrature points and weights for the reference triangle (0,0),(1,0),(0,1).
 
     Args:
-        xi (float): Reference coordinate xi.
-        eta (float): Reference coordinate eta.
-        p_order (int): Polynomial order.
+        required_degree (int): Integrate polynomials up to this degree exactly.
 
     Returns:
-        np.ndarray: Array of shape (N_P, 2) containing [dphi_j/dxi, dphi_j/deta].
+        tuple: (xi_coords, eta_coords, weights) - Weights scaled to sum to 0.5 (area).
 
-    NOTE: This is a PLACEHOLDER. Replace with gradients of your chosen basis.
+    NOTE/TODO: Using placeholder. Strongly recommend using a library like 'quadpy'
+               or known high-degree rules (e.g., Dunavant).
+               `scheme = quadpy.t2.get_good_scheme(required_degree)`
+               `points, weights = scheme.points, scheme.weights * 0.5`
     """
-    n_p = (p_order + 1) * (p_order + 2) // 2
-    if not (-1e-9 <= xi <= 1.0 + 1e-9 and -1e-9 <= eta <= 1.0 + 1e-9 and xi + eta <= 1.0 + 1e-9):
-         #print(f"Warning: Point ({xi}, {eta}) potentially outside reference triangle.")
-         pass
-
-    grads = np.zeros((n_p, 2))
-    # --- !!! REPLACE THIS PLACEHOLDER IMPLEMENTATION !!! ---
-    # Example using monomial gradients
-    count = 0
-    for i in range(p_order + 1):
-        for j in range(p_order - i + 1):
-            if count < n_p:
-                # Handle potential 0^negative cases for derivatives
-                term_xi_dxi = 0.0 if i == 0 else i * (xi**(i - 1) if i > 1 else 1.0)
-                term_eta_dxi = 1.0 if j == 0 and abs(eta) < 1e-15 else eta**j
-
-                term_xi_deta = 1.0 if i == 0 and abs(xi) < 1e-15 else xi**i
-                term_eta_deta = 0.0 if j == 0 else j * (eta**(j - 1) if j > 1 else 1.0)
-
-                # d/dxi
-                grads[count, 0] = term_xi_dxi * term_eta_dxi
-                # d/deta
-                grads[count, 1] = term_xi_deta * term_eta_deta
-                count += 1
-            else: break
-    # --- !!! END PLACEHOLDER !!! ---
-    if count != n_p:
-        raise ValueError(f"Basis gradient count mismatch: expected {n_p}, got {count}")
-    return grads
-
-# --- (Code Task 1.3) Quadrature ---
-
-def get_volume_quadrature(degree):
-    """
-    Provides 2D quadrature points (xi, eta) and weights (w) for the reference triangle
-    vertices (0,0), (1,0), (0,1), sufficient to integrate polynomials of the given degree exactly.
-
-    Args:
-        degree (int): The maximum polynomial degree to integrate exactly.
-
-    Returns:
-        tuple: (xi_coords, eta_coords, weights)
-               - xi_coords (np.ndarray): xi coordinates of quadrature points.
-               - eta_coords (np.ndarray): eta coordinates of quadrature points.
-               - weights (np.ndarray): Quadrature weights (scaled to sum to 0.5 - area).
-
-    NOTE: Using placeholder - Recommend using 'quadpy' for reliable points/weights.
-          `scheme = quadpy.t2.get_good_scheme(degree)`
-          `points = scheme.points` # Shape (N, 2) -> xi=points[:,0], eta=points[:,1]
-          `weights = scheme.weights * 0.5` # Scale quadpy weights
-    """
-    # --- !!! REPLACE THIS PLACEHOLDER IMPLEMENTATION with quadpy or known rules !!! ---
-    if degree <= 1: # Degree 1 rule (Midpoint rule, 3 points) - inaccurate for p=3
-        print(f"Warning: Using low-degree quadrature (1) for requested degree {degree}.")
-        weights = np.array([1.0/6.0, 1.0/6.0, 1.0/6.0]) # Sums to 0.5 already
-        xi_coords = np.array([0.5, 0.0, 0.5]) # Corrected midpoints: (0.5,0), (0,0.5), (0.5,0.5) -> need check
-        eta_coords = np.array([0.0, 0.5, 0.5])
-        # Corrected Midpoints: (0.5, 0.0), (0.5, 0.5), (0.0, 0.5)
-        xi_coords = np.array([0.5, 0.5, 0.0])
-        eta_coords = np.array([0.0, 0.5, 0.5])
-        return xi_coords, eta_coords, weights
-    elif degree <=3: # Degree 3 rule (4 points) - still INSUFFICIENT for p=3 assembly (needs 2p=6)
-         print(f"Warning: Using low-degree quadrature (3) for requested degree {degree}.")
-         weights = np.array([ -27.0/96.0, 25.0/96.0, 25.0/96.0, 25.0/96.0]) # Scale needed if sum != 0.5
+    print(f"Note: Requesting volume quadrature for degree {required_degree}.")
+    if required_degree < 6: # Required degree for P=3 assembly is 2*P_ORDER = 6
+         print(f"CRITICAL WARNING: Using placeholder quadrature insufficient for P={P_ORDER}. Results WILL BE WRONG.")
+         # Fallback to a known degree 3 rule (4 points) - NOT ACCURATE ENOUGH
+         weights = np.array([ -27.0/96.0, 25.0/96.0, 25.0/96.0, 25.0/96.0])
          weights *= 0.5 / np.sum(weights) # Ensure sum is 0.5
          xi_coords  = np.array([1.0/3.0, 0.6, 0.2, 0.2])
          eta_coords = np.array([1.0/3.0, 0.2, 0.6, 0.2])
          return xi_coords, eta_coords, weights
-    elif degree >= 6: # Placeholder for required degree
-         print(f"Warning: Using placeholder quadrature (Degree 3) for required degree {degree}. Results inaccurate.")
-         # REUSING DEGREE 3 RULE - REPLACE!
-         weights = np.array([ -27.0/96.0, 25.0/96.0, 25.0/96.0, 25.0/96.0])
-         weights *= 0.5 / np.sum(weights)
-         xi_coords  = np.array([1.0/3.0, 0.6, 0.2, 0.2])
-         eta_coords = np.array([1.0/3.0, 0.2, 0.6, 0.2])
-         return xi_coords, eta_coords, weights
+    elif required_degree >= 6:
+         print(f"CRITICAL WARNING: Using placeholder quadrature insufficient for P={P_ORDER}. Results WILL BE WRONG.")
+         # Using a known degree 5 rule (7 points) - Still NOT accurate enough for 2P=6!
+         # Replace this with a correct rule for degree 6 or higher from quadpy/literature.
+         w_ = np.array([0.125939180544827,+0.132394152788506,+0.132394152788506,
+                        +0.132394152788506,+0.058959942643300,+0.058959942643300,
+                        +0.058959942643300])
+         xi_ = np.array([1/3.,0.797426985353087,0.101286507323456,0.101286507323456,
+                         0.059715871789770,0.470142064105115,0.470142064105115])
+         eta_ = np.array([1/3.,0.101286507323456,0.797426985353087,0.101286507323456,
+                          0.470142064105115,0.059715871789770,0.470142064105115])
+         weights = w_ * 0.5 / np.sum(w_) # Scale weights to sum to 0.5
+         return xi_, eta_, weights
     else:
-         raise ValueError(f"Volume quadrature degree {degree} not implemented in placeholder")
-    # --- !!! END PLACEHOLDER !!! ---
+         raise ValueError(f"Volume quadrature degree {required_degree} not implemented.")
 
 
-def get_edge_quadrature(degree):
+def get_line_quadrature_rule(required_degree):
     """
-    Provides 1D Gauss-Legendre quadrature points (s) and weights (w)
-    on the interval [-1, 1], sufficient to integrate polynomials of the given degree.
+    Returns 1D Gauss-Legendre quadrature points/weights on [-1, 1].
 
     Args:
-        degree (int): The maximum polynomial degree to integrate exactly.
+        required_degree (int): Integrate polynomials up to this degree exactly.
 
     Returns:
-        tuple: (points, weights)
+        tuple: (points, weights) on interval [-1, 1].
     """
-    n_points = int(np.ceil((degree + 1) / 2))
-    points, weights = roots_legendre(n_points)
-    return points, weights # Defined on [-1, 1]
+    num_points = int(np.ceil((required_degree + 1) / 2))
+    if num_points < 1: num_points = 1 # Ensure at least one point
+    points, weights = roots_legendre(num_points)
+    return points, weights
 
+# --- Coordinate Mapping ---
 
-# --- (Code Task 1.2) Mapping ---
-
-def get_element_mapping(verts):
+def calculate_affine_mapping(element_vertices):
     """
-    Calculates Jacobian, inverse Jacobian, and determinant for the affine map
-    from reference triangle K_ref((0,0),(1,0),(0,1)) to physical triangle K with vertices `verts`.
+    Calculates Jacobian details for the map from ref triangle to physical element.
 
     Args:
-        verts (np.ndarray): Array of shape (3, 2) with physical vertex coordinates
-                            [[x0, t0], [x1, t1], [x2, t2]]. Order corresponds to ref vertices.
+        element_vertices (np.ndarray): (3, 2) array of physical vertex coordinates
+                                        [[x0, t0], [x1, t1], [x2, t2]].
 
     Returns:
-        tuple: (jacobian, inv_jacobian, det_jacobian)
+        tuple: (jacobian, inverse_jacobian, determinant)
     """
-    v0, v1, v2 = verts[0, :], verts[1, :], verts[2, :] # Physical coords (Using v0,v1,v2 for clarity with formula)
+    v0, v1, v2 = element_vertices[0, :], element_vertices[1, :], element_vertices[2, :]
 
     # Jacobian J = [[dx/dxi, dx/deta], [dt/dxi, dt/deta]]
-    # Using map: P(xi,eta) = v0*(1-xi-eta) + v1*xi + v2*eta
-    # dx/dxi = v1[0]-v0[0], dx/deta = v2[0]-v0[0]
-    # dt/dxi = v1[1]-v0[1], dt/deta = v2[1]-v0[1]
     jacobian = np.array([
         [v1[0] - v0[0], v2[0] - v0[0]],
         [v1[1] - v0[1], v2[1] - v0[1]]
     ])
 
-    det_jacobian = np.linalg.det(jacobian)
-    # Check determinant sign - determines orientation. Should be positive if vertices ordered correctly.
-    if abs(det_jacobian) < 1e-14:
-        # Try calculating area using Shoelace formula as cross-check
+    determinant = np.linalg.det(jacobian)
+
+    # Check for degenerate or flipped elements
+    if abs(determinant) < 1e-14:
         area = 0.5 * abs(v0[0]*(v1[1]-v2[1]) + v1[0]*(v2[1]-v0[1]) + v2[0]*(v0[1]-v1[1]))
         if area < 1e-14:
-             raise ValueError(f"Degenerate element vertices: {verts}. Area is near zero.")
+             raise ValueError(f"Degenerate element vertices (Area ~ 0): {element_vertices}")
         else:
-             print(f"Warning: Jacobian determinant {det_jacobian} is near zero for element {verts}. Area={area}")
-             # Proceed cautiously, might indicate poor element shape
+             # Determinant near zero suggests sliver element, could cause numerical issues
+             print(f"Warning: Jacobian determinant {determinant:.2e} near zero for element {element_vertices}. Area={area:.2e}")
 
-    # Inverse Jacobian using 2x2 formula: inv([[a,b],[c,d]]) = 1/det * [[d, -b], [-c, a]]
-    inv_jacobian = (1.0 / det_jacobian) * np.array([
+    if determinant <= 0:
+         print(f"Warning: Element {element_vertices} has non-positive Jacobian determinant {determinant:.2e}. Check vertex ordering (should be counter-clockwise).")
+         # Depending on strictness, could raise error here
+
+    # Inverse Jacobian
+    inv_jacobian = np.array([
         [ jacobian[1, 1], -jacobian[0, 1]],
         [-jacobian[1, 0],  jacobian[0, 0]]
-    ])
+    ]) / determinant # Apply determinant division
 
-    return jacobian, inv_jacobian, det_jacobian
-
-
-def map_gradients(dphi_dxi_eta, inv_jacobian):
-    """
-    Maps gradients from reference coordinates (xi, eta) to physical (x, t).
-
-    Args:
-        dphi_dxi_eta (np.ndarray): Gradients in ref coords, shape (N_P, 2).
-                                     [[dphi/dxi, dphi/deta], ...]
-        inv_jacobian (np.ndarray): Inverse Jacobian matrix (2, 2).
-
-    Returns:
-        np.ndarray: Gradients in physical coords, shape (N_P, 2).
-                    [[dphi/dx, dphi/dt], ...]
-    """
-    # Formula: [d/dx, d/dt]^T = J_inv^T @ [d/dxi, d/deta]^T
-    # For a scalar function phi: [dphi/dx, dphi/dt] = [dphi/dxi, dphi/deta] @ J_inv
-    # Ensure correct shapes for matrix multiplication if dphi_dxi_eta is single grad (2,)
-    if dphi_dxi_eta.ndim == 1:
-        dphi_dxi_eta = dphi_dxi_eta.reshape(1, 2) # Make it a row vector for consistency
-        dphi_dx_dt = dphi_dxi_eta @ inv_jacobian
-        return dphi_dx_dt.flatten() # Return as a flat array (2,)
-    else: # Assume shape (N_P, 2)
-        dphi_dx_dt = dphi_dxi_eta @ inv_jacobian
-        return dphi_dx_dt
+    return jacobian, inv_jacobian, determinant
 
 
-# --- (Code Task 1.5) Mesh Connectivity (Conceptual Structure) ---
+def transform_reference_gradients(ref_grads, inv_jacobian):
+    """ Maps gradients from reference (xi, eta) to physical (x, t) coordinates. """
+    # Input ref_grads shape: (N_DOF_PER_ELEMENT, 2)
+    # Formula: [d/dx, d/dt] = [d/dxi, d/deta] @ J_inv
+    phys_grads = ref_grads @ inv_jacobian
+    return phys_grads # Shape: (N_DOF_PER_ELEMENT, 2)
 
-class Mesh:
-    """Conceptual class to hold mesh information."""
-    def __init__(self, vertices, elements, edges_info):
+
+# --- Mesh Data Structure (Conceptual) ---
+
+class MeshData:
+    """ Simple container for mesh data. Needs population from a mesh generator. """
+    def __init__(self, vertices, elements, edge_map):
         """
         Args:
-            vertices (np.ndarray): (num_verts, 2) array of vertex [x, t] coords.
-            elements (np.ndarray): (num_elems, 3) array of vertex indices for each triangle.
-            edges_info (dict): Dictionary mapping a unique edge identifier (e.g., tuple of sorted vertex indices)
-                               to its details.
-                 Example: edge_key=(min(v1,v2), max(v1,v2)) -> {
-                     'vertices': (v_idx1, v_idx2), # Global vertex indices
-                     'length': float,
-                     'normal': np.array([nx, nt]), # Outward normal w.r.t elements[0] element
-                     'elements': (elem_idx1, elem_idx2), # elem_idx2 = -1 for boundary
-                     'local_indices': (local_edge_idx1, local_edge_idx2) # Edge index (0,1,2) within element
-                 }
+            vertices (np.ndarray): (N_verts, 2) coordinates [x, t].
+            elements (np.ndarray): (N_elems, 3) vertex indices per element.
+            edge_map (dict): Maps edge key (e.g., sorted vertex tuple) to info:
+                             {'vertices':(v1,v2), 'length':L, 'normal':n,
+                              'elements':(e1, e2), 'local_indices':(loc1, loc2)}
+                              e2=-1 for boundary. Normal points out from e1.
         """
         self.vertices = vertices
         self.elements = elements
         self.num_elements = elements.shape[0]
-        self.edges_info = edges_info # This needs to be constructed carefully by mesh generator
+        self.edge_map = edge_map # Assumes this map is complete and correct
 
-        # Precompute element vertices for quick lookup
-        self.element_vertices = np.array([vertices[el_verts] for el_verts in elements])
+        self.element_vertices_coords = np.array([vertices[el_verts] for el_verts in elements])
+        self.edges_per_element = self._build_edge_list_per_element()
 
-        # Precompute edge info per element for faster lookup during assembly
-        self.element_edges = [[] for _ in range(self.num_elements)]
-        if edges_info: # Check if edges_info is provided and not empty
-            for edge_id, info in edges_info.items():
-                el1_idx = info['elements'][0]
-                loc1_idx = info['local_indices'][0]
-                # Add edge info relative to the first element
-                self.element_edges[el1_idx].append({
-                    'edge_id': edge_id,
+    def _build_edge_list_per_element(self):
+        """ Helper to organize edge info by element index. """
+        edges_by_elem = [[] for _ in range(self.num_elements)]
+        if not self.edge_map:
+            print("Warning (Mesh): Edge map is empty, cannot build edge list per element.")
+            return edges_by_elem
+
+        for edge_key, info in self.edge_map.items():
+            try:
+                el1_idx, el2_idx = info['elements']
+                loc1_idx, loc2_idx = info['local_indices']
+
+                # Info for element 1
+                edges_by_elem[el1_idx].append({
+                    'edge_key': edge_key,
                     'local_idx': loc1_idx,
                     'normal': info['normal'], # Normal outward from el1
                     'length': info['length'],
-                    'neighbor_element': info['elements'][1],
-                    'neighbor_local_idx': info.get('local_indices', (None, None))[1] # Use get for safety
+                    'neighbor_element': el2_idx,
+                    'neighbor_local_idx': loc2_idx
                 })
-                # If it's an internal edge, add info relative to the second element
-                if info['elements'][1] != -1:
-                    el2_idx = info['elements'][1]
-                    loc2_idx = info.get('local_indices', (None, None))[1]
-                    if loc2_idx is not None: # Ensure local index for neighbor exists
-                         self.element_edges[el2_idx].append({
-                            'edge_id': edge_id,
-                            'local_idx': loc2_idx,
-                            'normal': -info['normal'], # Normal outward from el2 (opposite)
-                            'length': info['length'],
-                            'neighbor_element': info['elements'][0],
-                            'neighbor_local_idx': info['local_indices'][0]
-                        })
-                    else:
-                        print(f"Warning: Missing local index for neighbor element {el2_idx} on edge {edge_id}")
-        else:
-             print("Warning: Mesh created without edge information.")
+                # Info for element 2 (if internal)
+                if el2_idx != -1:
+                    edges_by_elem[el2_idx].append({
+                        'edge_key': edge_key,
+                        'local_idx': loc2_idx,
+                        'normal': -info['normal'], # Normal outward from el2
+                        'length': info['length'],
+                        'neighbor_element': el1_idx,
+                        'neighbor_local_idx': loc1_idx
+                    })
+            except KeyError as e:
+                 print(f"Error processing edge {edge_key}: Missing key {e} in edge_map info.")
+            except IndexError as e:
+                 print(f"Error processing edge {edge_key}: Element index out of bounds? {e}")
+        # Sanity check: each element should have 3 edges listed
+        for k, edges in enumerate(edges_by_elem):
+            if len(edges) != 3:
+                print(f"Warning (Mesh): Element {k} has {len(edges)} edges associated, expected 3.")
+        return edges_by_elem
 
+    def get_vertices_for_element(self, element_index):
+        """ Get coordinates of vertices for element k. """
+        if not (0 <= element_index < self.num_elements):
+            raise IndexError(f"Element index {element_index} out of range.")
+        return self.element_vertices_coords[element_index]
 
-    def get_element_vertices(self, k):
-        """Returns (3, 2) array of vertices for element k."""
-        if k < 0 or k >= self.num_elements:
-            raise IndexError(f"Element index {k} out of bounds (0 to {self.num_elements-1})")
-        return self.element_vertices[k]
-
-    def get_element_edge_info(self, k):
-        """Returns a list of info dicts for the edges of element k."""
-        if k < 0 or k >= self.num_elements:
-            raise IndexError(f"Element index {k} out of bounds (0 to {self.num_elements-1})")
-        if not self.element_edges[k]:
-             print(f"Warning: No edge information available for element {k}")
-        return self.element_edges[k]
+    def get_edge_info_for_element(self, element_index):
+        """ Get list of edge info dictionaries for element k. """
+        if not (0 <= element_index < self.num_elements):
+            raise IndexError(f"Element index {element_index} out of range.")
+        return self.edges_per_element[element_index]
 
 # --- Numerical Flux ---
 
-def lax_friedrichs_flux(u_minus, u_plus, normal, a):
-    """
-    Calculates the Local Lax-Friedrichs flux for 1D advection in space-time.
+def flux_lax_friedrichs(u_in, u_out, normal_vec, wave_speed_a):
+    """ Calculates Lax-Friedrichs flux for u_t + a u_x = 0 in space-time. """
+    nx, nt = normal_vec[0], normal_vec[1]
+    # Physical flux component normal to the edge: F(u) . n = (a*u*nx + u*nt)
+    flux_phys_in = (wave_speed_a * nx + nt) * u_in
+    flux_phys_out = (wave_speed_a * nx + nt) * u_out
 
-    Args:
-        u_minus (float): Solution value inside the element.
-        u_plus (float): Solution value outside the element (neighbor/BC).
-        normal (np.ndarray): Outward unit normal vector [nx, nt], shape (2,).
-        a (float): Advection speed.
+    # Max wave speed normal to edge (alpha in LF formula)
+    # C = | F'(u) . n | = | (a*nx + nt) |
+    max_normal_speed = abs(wave_speed_a * nx + nt)
 
-    Returns:
-        float: The numerical flux value.
-    """
-    nx, nt = normal[0], normal[1]
-    F_minus_n = (a * nx + nt) * u_minus
-    F_plus_n = (a * nx + nt) * u_plus
+    # LF Flux: 0.5 * (F_n(in) + F_n(out)) - 0.5 * C * (u_out - u_in)
+    numerical_flux = 0.5 * (flux_phys_in + flux_phys_out) - 0.5 * max_normal_speed * (u_out - u_in)
+    return numerical_flux
 
-    # Stabilization parameter C = max |a*nx + nt|
-    # For safety, we can overestimate C based on possible normals.
-    # Or, calculate it precisely based on the specific edge normal.
-    C_stab = abs(a * nx + nt) # Precise for this edge
+# --- Local Element Assembly ---
 
-    flux = 0.5 * (F_minus_n + F_plus_n) - 0.5 * C_stab * (u_plus - u_minus)
-    return flux
+def compute_element_matrix_M(element_verts, wave_speed_a, poly_order=P_ORDER):
+    """ Assembles local matrix M^K for ∫∫ φ_j (a ∂φ_i/∂x + ∂φ_i/∂t) dx dt. """
+    num_dofs = (poly_order + 1) * (poly_order + 2) // 2
+    element_M = np.zeros((num_dofs, num_dofs))
 
-# --- (Code Task 1.4) Local Matrix/Vector Assembly ---
-
-def assemble_local_matrix(verts, a, p_order=P_ORDER):
-    """
-    Assembles the local matrix M^K for a single space-time element K.
-    M_ij = ∫∫_K φ_j (a ∂φ_i/∂x + ∂φ_i/∂t) dx dt
-
-    Args:
-        verts (np.ndarray): Vertices of the physical element [[x0,t0],[x1,t1],[x2,t2]].
-        a (float): Advection speed.
-        p_order (int): Polynomial order.
-
-    Returns:
-        np.ndarray: Local matrix M^K, shape (N_P, N_P).
-    """
-    n_p = (p_order + 1) * (p_order + 2) // 2
-    local_M = np.zeros((n_p, n_p))
-
-    # Quadrature degree: need to integrate grad(phi_i)*phi_j -> deg (p-1)+p = 2p-1
-    # Let's use a rule exact for degree 2*p_order for safety/generality
-    quad_deg_vol = 2 * p_order
+    # Quadrature degree needed: (P-1) + P = 2P-1. Use 2P for safety.
+    quad_degree = 2 * poly_order
     try:
-        xi_v, eta_v, w_v = get_volume_quadrature(quad_deg_vol)
+        xi_q, eta_q, w_q = get_triangle_quadrature_rule(quad_degree)
     except ValueError as e:
-        print(f"Error getting volume quadrature: {e}")
-        return None # Or handle error appropriately
-    num_quad_vol = len(w_v)
+        print(f"Assembly failed: {e}")
+        return None
+    num_quad_points = len(w_q)
 
-    # Mapping derivatives (constant for affine map)
     try:
-        _, inv_jacobian, det_jacobian = get_element_mapping(verts)
+        _, inv_J, det_J = calculate_affine_mapping(element_verts)
     except ValueError as e:
-        print(f"Error getting element mapping: {e}")
-        return None # Or handle degenerate element
+        print(f"Assembly failed for element {element_verts}: {e}")
+        return None
 
-    for q in range(num_quad_vol):
-        xi, eta, w = xi_v[q], eta_v[q], w_v[q]
+    for q_idx in range(num_quad_points):
+        xi, eta, w = xi_q[q_idx], eta_q[q_idx], w_q[q_idx]
 
-        # Basis functions and gradients at quadrature point (reference coords)
-        phi_vals = basis_functions(xi, eta, p_order)         # Shape (N_P,)
-        dphi_dxi_eta = basis_gradients(xi, eta, p_order)     # Shape (N_P, 2)
+        # Evaluate basis and gradients at quadrature point (reference)
+        basis_at_q = evaluate_reference_basis(xi, eta, poly_order)       # Shape (N_DOF,)
+        grads_at_q_ref = evaluate_reference_basis_gradients(xi, eta, poly_order) # Shape (N_DOF, 2)
 
-        # Map gradients to physical coords
-        dphi_dx_dt = map_gradients(dphi_dxi_eta, inv_jacobian) # Shape (N_P, 2)
-        dphi_dx = dphi_dx_dt[:, 0]
-        dphi_dt = dphi_dx_dt[:, 1]
+        # Transform gradients to physical coordinates (x, t)
+        grads_at_q_phys = transform_reference_gradients(grads_at_q_ref, inv_J) # Shape (N_DOF, 2)
+        dphi_dx = grads_at_q_phys[:, 0]
+        dphi_dt = grads_at_q_phys[:, 1]
 
-        # Calculate integrand: phi_j * (a * dphi_i/dx + dphi_i/dt)
-        # Using outer product: term_i = a * dphi_dx + dphi_dt
-        # M_ij += term_i[i] * phi_vals[j] * w * det_jacobian
-        term_i = a * dphi_dx + dphi_dt # Shape (N_P,)
-        # integrand_matrix[i, j] = term_i[i] * phi_vals[j]
-        integrand_matrix = np.outer(term_i, phi_vals) # Shape (N_P, N_P)
+        # Compute M_ij = Sum_q [ weight_q * detJ * basis_j(q) * (a*d(basis_i)/dx + d(basis_i)/dt) ]
+        term_i = wave_speed_a * dphi_dx + dphi_dt # Shape (N_DOF,)
+        # contribution = np.outer(term_i, basis_at_q) # contribution[i, j] = term_i[i] * basis_at_q[j]
+        # outer product gives M[i,j] = term_i[i] * basis_at_q[j]
+        element_M += np.outer(term_i, basis_at_q) * w * det_J
 
-        local_M += integrand_matrix * w * det_jacobian # Weights sum to 0.5, detJ is 2*Area
+    return element_M
 
-    return local_M
+def compute_element_rhs_R(elem_idx, element_verts, element_coeffs, mesh_data, global_coeffs_U, wave_speed_a, poly_order=P_ORDER):
+    """ Assembles local RHS vector R^K for ∫_{∂K} F̂_n(u^-, u^+) φ_i ds. """
+    num_dofs = (poly_order + 1) * (poly_order + 2) // 2
+    element_R = np.zeros(num_dofs)
 
-
-def assemble_local_rhs(k_elem, verts, u_coeffs_k, mesh, U_global, a, p_order=P_ORDER):
-    """
-    Assembles the local right-hand side vector R^K for a single element K.
-    R_i = ∫_{∂K} F̂_n(u_h^-, u_h^+) φ_i ds
-
-    Args:
-        k_elem (int): Index of the current element.
-        verts (np.ndarray): Vertices of the physical element [[x0,t0],[x1,t1],[x2,t2]].
-        u_coeffs_k (np.ndarray): Solution coefficients for element k, shape (N_P,).
-        mesh (Mesh): Mesh object providing connectivity and geometry.
-        U_global (np.ndarray): Global solution vector (e.g., shape (num_elems, N_P)).
-                                Assumes accessible coefficients for neighbors.
-        a (float): Advection speed.
-        p_order (int): Polynomial order.
-
-    Returns:
-        np.ndarray: Local RHS vector R^K, shape (N_P,).
-    """
-    n_p = (p_order + 1) * (p_order + 2) // 2
-    local_R = np.zeros(n_p)
-
-    # Quadrature degree for edge: F_hat * phi_i -> approx deg p * deg p = 2p
-    quad_deg_edge = 2 * p_order
+    # Quadrature degree for edge integrals: approx degree P * degree P = 2P
+    edge_quad_degree = 2 * poly_order
     try:
-        s_e, w_e = get_edge_quadrature(quad_deg_edge) # Points/weights on [-1, 1]
+        edge_qp, edge_qw = get_line_quadrature_rule(edge_quad_degree) # Points on [-1, 1]
     except ValueError as e:
-        print(f"Error getting edge quadrature: {e}")
-        return None # Or handle error
-    num_quad_edge = len(s_e)
+        print(f"Assembly failed: {e}")
+        return None
+    num_edge_qp = len(edge_qp)
 
-    # Get info for the 3 edges of the current element
-    edge_info_list = mesh.get_element_edge_info(k_elem)
+    # Get edge information for the current element
+    edges_info = mesh_data.get_edge_info_for_element(elem_idx)
+    if not edges_info: return element_R # Skip if no edge info available
 
-    # Map reference triangle vertices (0,0), (1,0), (0,1) to edge indices
-    # Edge 0: (0,0) -> (1,0) : xi varies 0 to 1, eta = 0
-    # Edge 1: (1,0) -> (0,1) : xi = 1-s, eta = s (s from 0 to 1)
-    # Edge 2: (0,1) -> (0,0) : xi = 0, eta = 1-s (s from 0 to 1)
-    ref_edge_parametrization = [
-        lambda s: (s, 0.0),         # Edge 0: Parameter s runs 0 to 1
-        lambda s: (1.0 - s, s),     # Edge 1: Parameter s runs 0 to 1
-        lambda s: (0.0, 1.0 - s)     # Edge 2: Parameter s runs 0 to 1
+    # Parametrization functions for edges 0, 1, 2 of reference triangle
+    ref_edge_param_funcs = [
+        lambda s: (s, 0.0),         # Edge 0 (xi=s, eta=0)
+        lambda s: (1.0 - s, s),     # Edge 1 (xi=1-s, eta=s)
+        lambda s: (0.0, 1.0 - s)     # Edge 2 (xi=0, eta=1-s)
+        # Parameter 's' runs from 0 to 1 along the edge
     ]
 
-    for edge_info in edge_info_list:
-        local_edge_idx = edge_info['local_idx'] # 0, 1, or 2
-        normal = edge_info['normal']           # Outward normal for *this* element
-        L_edge = edge_info['length']
-        k_neighbor = edge_info['neighbor_element']
+    for edge in edges_info:
+        local_idx = edge['local_idx']
+        normal_phys = edge['normal'] # Physical outward normal for this element
+        edge_len = edge['length']
+        neighbor_idx = edge['neighbor_element']
 
-        # Get parametrization function for the current edge index
-        get_ref_coords = ref_edge_parametrization[local_edge_idx]
+        # Jacobian for 1D integral on edge: length_physical / length_reference = edge_len / 2.0
+        edge_jacobian_1d = edge_len / 2.0
+        if abs(edge_jacobian_1d) < 1e-14: continue # Skip zero-length edges
 
-        # Edge Jacobian for 1D integral on reference [-1, 1]: L_physical / L_reference = L_edge / 2.0
-        edge_jacobian = L_edge / 2.0
-        if abs(edge_jacobian) < 1e-14:
-            print(f"Warning: Edge {k_elem},{local_edge_idx} has near-zero length {L_edge}. Skipping.")
-            continue
+        param_func = ref_edge_param_funcs[local_idx]
 
-        for q in range(num_quad_edge):
-            sq, wq = s_e[q], w_e[q] # Point/weight on [-1, 1]
-            s_param = (sq + 1.0) / 2.0 # Map Gauss point from [-1,1] to edge parameter [0,1]
+        for q_idx in range(num_edge_qp):
+            sq, wq = edge_qp[q_idx], edge_qw[q_idx] # Quadrature point/weight on [-1, 1]
+            s_param = (sq + 1.0) / 2.0 # Map point from [-1, 1] to parameter [0, 1]
 
-            # Reference coords (xi, eta) on the edge using parametrization
-            xi_q, eta_q = get_ref_coords(s_param)
+            # Get reference coords (xi, eta) on the edge
+            xi_q, eta_q = param_func(s_param)
 
-            # Basis functions at the edge quadrature point in reference coords
-            phi_vals_q = basis_functions(xi_q, eta_q, p_order) # Shape (N_P,)
+            # Evaluate basis functions at this point on the edge (in reference coords)
+            basis_vals_at_q = evaluate_reference_basis(xi_q, eta_q, poly_order) # Shape (N_DOF,)
 
-            # Solution value from inside the current element ('minus' side)
-            u_minus_q = np.dot(phi_vals_q, u_coeffs_k)
+            # Evaluate solution from THIS element ('u_minus') at the point
+            u_minus_at_q = np.dot(basis_vals_at_q, element_coeffs)
 
-            # Solution value from the neighbor ('plus' side)
-            if k_neighbor != -1:
-                # Internal edge - get neighbor coefficients
-                # Assuming U_global is structured [element, coeff_index]
+            # Evaluate solution from NEIGHBOR element ('u_plus') at the point
+            u_plus_at_q = 0.0 # Default for boundary or error
+            if neighbor_idx != -1:
+                # Internal edge: Get neighbor's coefficients
                 try:
-                    u_coeffs_neighbor = U_global[k_neighbor, :]
-                    # We need basis values *at the corresponding point* on the neighbor's edge
-                    # This requires mapping (xi_q, eta_q) from current element's edge
-                    # to the neighbor element's reference coordinates.
-                    # For affine elements and straight edges, the reference basis function
-                    # values *should* correspond IF the local node numbering aligns
-                    # across the shared edge. This relies heavily on mesh generator & basis setup.
-                    # ASSUMPTION: phi_vals_q calculated for k_elem edge applies to k_neighbor edge point too.
-                    u_plus_q = np.dot(phi_vals_q, u_coeffs_neighbor)
+                    neighbor_coeffs = global_coeffs_U[neighbor_idx, :]
+                    # Evaluate neighbor's solution using *same* basis values at corresponding point
+                    # ASSUMES basis functions align correctly across edge
+                    u_plus_at_q = np.dot(basis_vals_at_q, neighbor_coeffs)
                 except IndexError:
-                     print(f"Error accessing neighbor {k_neighbor} coefficients for element {k_elem}")
-                     u_plus_q = u_minus_q # Fallback: Treat as boundary, needs review
+                    print(f"Error: Neighbor index {neighbor_idx} out of bounds accessing global_coeffs_U.")
+                    u_plus_at_q = u_minus_at_q # Fallback: Use own state (can cause issues)
                 except Exception as e:
-                     print(f"Error getting neighbor state: {e}")
-                     u_plus_q = u_minus_q # Fallback
-
+                    print(f"Unexpected error getting neighbor state: {e}")
+                    u_plus_at_q = u_minus_at_q # Fallback
             else:
-                # Boundary edge - apply boundary condition via flux
-                # Requires specific BC implementation. Placeholder using zero inflow:
-                char_speed_normal = a * normal[0] + normal[1]
+                # Boundary edge: Apply Boundary Condition through u_plus
+                # Placeholder: Zero inflow condition
+                char_speed_normal = wave_speed_a * normal_phys[0] + normal_phys[1]
                 if char_speed_normal < -1e-9: # Characteristic points strictly inward
-                    u_plus_q = 0.0 # Assume zero inflow state for u_plus
+                    u_plus_at_q = 0.0 # Prescribe external state (e.g., zero)
                 else: # Characteristic points outward or tangential
-                    u_plus_q = u_minus_q # Use internal state for u_plus (zero normal flux for BC)
-                # print(f"BC Edge {k_elem},{local_edge_idx}, n=({normal[0]:.1f},{normal[1]:.1f}), char_spd={char_speed_normal:.1f}, u+={u_plus_q:.2f}")
+                    u_plus_at_q = u_minus_at_q # Use internal state (effectively sets flux based on u_minus only)
 
+            # Calculate the numerical flux value at the quadrature point
+            flux_val_at_q = flux_lax_friedrichs(u_minus_at_q, u_plus_at_q, normal_phys, wave_speed_a)
 
-            # Calculate numerical flux
-            F_hat_q = lax_friedrichs_flux(u_minus_q, u_plus_q, normal, a)
+            # Add contribution to the RHS vector R_i += Sum_q [ wq * jac_1d * flux_val * basis_i(q) ]
+            element_R += flux_val_at_q * basis_vals_at_q * wq * edge_jacobian_1d
 
-            # Add contribution to RHS: Integral F_hat * phi_i * ds
-            # ds = |J_edge| * d(s_e) where s_e is on [-1, 1]
-            # Integral = Sum[ F_hat * phi_i * wq * |J_edge| ] over q points
-            local_R += F_hat_q * phi_vals_q * wq * edge_jacobian
+    return element_R
 
-    return local_R
+# --- Plotting ---
+def plot_st_element_solution(element_verts, element_coeffs, poly_order=P_ORDER, plot_resolution=15):
+    """ Creates a contour plot of the DG solution within one space-time triangle. """
+    num_dofs = (poly_order + 1) * (poly_order + 2) // 2
+    if len(element_coeffs) != num_dofs:
+        raise ValueError(f"Coefficient array size mismatch. Expected {num_dofs}, got {len(element_coeffs)}")
 
-# --- Plotting Function ---
-def plot_element_solution(verts, u_coeffs, p_order=P_ORDER, resolution=20):
-    """
-    Creates a contour plot of the DG solution within a single triangular element.
+    # 1. Create evaluation points in reference coordinates
+    xi_linspace = np.linspace(0, 1, plot_resolution)
+    eta_linspace = np.linspace(0, 1, plot_resolution)
+    xi_grid, eta_grid = np.meshgrid(xi_linspace, eta_linspace)
+    mask = xi_grid + eta_grid <= 1.0 + 1e-9 # Points within ref triangle
+    xi_eval = xi_grid[mask]
+    eta_eval = eta_grid[mask]
+    num_eval_points = len(xi_eval)
+    if num_eval_points == 0: return # Nothing to plot
 
-    Args:
-        verts (np.ndarray): Vertices of the physical element [[x0,t0],[x1,t1],[x2,t2]].
-        u_coeffs (np.ndarray): Solution coefficients for the element, shape (N_P,).
-        p_order (int): Polynomial order.
-        resolution (int): Number of points along each reference edge for plotting grid.
-    """
-    n_p = (p_order + 1) * (p_order + 2) // 2
-    if len(u_coeffs) != n_p:
-        raise ValueError(f"Incorrect number of coefficients. Expected {n_p}, got {len(u_coeffs)}")
+    # 2. Map evaluation points to physical coords (x, t)
+    v0, v1, v2 = element_verts[0,:], element_verts[1,:], element_verts[2,:]
+    x_eval = v0[0]*(1-xi_eval-eta_eval) + v1[0]*xi_eval + v2[0]*eta_eval
+    t_eval = v0[1]*(1-xi_eval-eta_eval) + v1[1]*xi_eval + v2[1]*eta_eval
 
-    # 1. Create a grid of points in the reference triangle (xi, eta)
-    xi_pts = np.linspace(0, 1, resolution)
-    eta_pts = np.linspace(0, 1, resolution)
-    xi_grid, eta_grid = np.meshgrid(xi_pts, eta_pts)
+    # 3. Evaluate solution u_h at physical evaluation points
+    u_eval = np.zeros(num_eval_points)
+    for i in range(num_eval_points):
+        basis_at_pt = evaluate_reference_basis(xi_eval[i], eta_eval[i], poly_order)
+        u_eval[i] = np.dot(basis_at_pt, element_coeffs)
 
-    # Filter points to be inside the reference triangle (xi + eta <= 1)
-    mask = xi_grid + eta_grid <= 1.0 + 1e-9 # Add tolerance
-    xi_flat = xi_grid[mask]
-    eta_flat = eta_grid[mask]
-    num_plot_pts = len(xi_flat)
-    if num_plot_pts == 0:
-        print("Warning: No points generated for plotting in reference triangle.")
-        return
-
-    # 2. Map reference points to physical (x, t)
-    # Affine map: P(xi,eta) = v0*(1-xi-eta) + v1*xi + v2*eta
-    v0, v1, v2 = verts[0, :], verts[1, :], verts[2, :]
-    x_plot = v0[0] * (1 - xi_flat - eta_flat) + v1[0] * xi_flat + v2[0] * eta_flat
-    t_plot = v0[1] * (1 - xi_flat - eta_flat) + v1[1] * xi_flat + v2[1] * eta_flat
-
-    # 3. Evaluate the DG solution u_h at these points
-    u_plot = np.zeros(num_plot_pts)
-    for i in range(num_plot_pts):
-        try:
-            phi_vals_i = basis_functions(xi_flat[i], eta_flat[i], p_order) # Assumes basis_functions is defined
-            u_plot[i] = np.dot(phi_vals_i, u_coeffs)
-        except ValueError as e:
-             print(f"Error evaluating basis/solution at ref pt ({xi_flat[i]}, {eta_flat[i]}): {e}")
-             u_plot[i] = np.nan # Mark as invalid
-
-    # 4. Create triangulation object for plotting
+    # 4. Plot using tricontourf
+    fig, ax = plt.subplots(figsize=(8, 7))
     try:
-        # Create triangulation based on the reference points (more robust)
-        triang_ref = tri.Triangulation(xi_flat, eta_flat)
-        # Use this topology but with physical coordinates for plotting
-        triang = tri.Triangulation(x_plot, t_plot, triangles=triang_ref.triangles)
+        # Triangulation based on reference points can be more robust
+        tri_ref = tri.Triangulation(xi_eval, eta_eval)
+        tri_phys = tri.Triangulation(x_eval, t_eval, triangles=tri_ref.triangles)
 
+        contour_plot = ax.tricontourf(tri_phys, u_eval, cmap='viridis', levels=14)
+        fig.colorbar(contour_plot, label=f'$u_h$ (P{poly_order})')
+        ax.triplot(tri_phys, 'k-', lw=0.3, alpha=0.5) # Show triangulation lightly
     except Exception as e:
-        print(f"Warning: Could not create plot triangulation: {e}")
-        print("Plotting might fail or look incorrect.")
-        # Fallback to scatter plot
-        plt.figure(figsize=(8, 6))
-        plt.scatter(x_plot, t_plot, c=u_plot, cmap='viridis', s=10, vmin=np.nanmin(u_plot), vmax=np.nanmax(u_plot))
-        plt.plot([verts[0,0], verts[1,0], verts[2,0], verts[0,0]],
-                 [verts[0,1], verts[1,1], verts[2,1], verts[0,1]], 'r-', lw=1)
-        plt.colorbar(label=f'u_h (P{p_order})')
-        plt.xlabel('x (Space)')
-        plt.ylabel('t (Time)')
-        plt.title(f'DG Solution (Fallback Plot) in Element\nVertices: {verts.round(2).tolist()}')
-        plt.axis('equal')
-        plt.grid(True, linestyle=':')
-        return
+        print(f"Plotting warning: {e}. Using scatter plot fallback.")
+        scatter_plot = ax.scatter(x_eval, t_eval, c=u_eval, cmap='viridis', s=15, vmin=np.min(u_eval), vmax=np.max(u_eval))
+        fig.colorbar(scatter_plot, label=f'$u_h$ (P{poly_order})')
 
-    # 5. Create the plot
-    fig, ax = plt.subplots(figsize=(8, 6))
-    # Filter out potential NaN values before plotting
-    valid_mask = ~np.isnan(u_plot)
-    if np.any(valid_mask):
-        contour = ax.tricontourf(triang, u_plot[valid_mask], cmap='viridis', levels=15) # Only plot valid data
-        ax.triplot(triang, 'ko-', lw=0.5, markersize=2) # Show evaluation points/mesh
-        fig.colorbar(contour, label=f'u_h (P{p_order})')
-    else:
-        print("Warning: No valid solution data to plot.")
+    # Outline the element
+    ax.plot([v0[0], v1[0], v2[0], v0[0]], [v0[1], v1[1], v2[1], v0[1]], 'r-', lw=1.5)
 
-    # Plot element boundary
-    ax.plot([verts[0,0], verts[1,0], verts[2,0], verts[0,0]],
-            [verts[0,1], verts[1,1], verts[2,1], verts[0,1]], 'r-', lw=2)
-
-    # Add labels, title, colorbar
-    ax.set_xlabel('x (Space)')
-    ax.set_ylabel('t (Time)')
-    ax.set_title(f'DG Solution (Random Coeffs) in Element\nVertices: {verts.round(2).tolist()}')
+    ax.set_xlabel('$x$ (Space)')
+    ax.set_ylabel('$t$ (Time)')
+    ax.set_title(f'STDG Solution in Element (Random Coefficients)')
     ax.set_aspect('equal', adjustable='box')
-    ax.grid(True, linestyle=':')
+    ax.grid(alpha=0.3)
+    return fig, ax
 
-# --- Example Usage (Illustrative) ---
+
+# --- Example Usage ---
 if __name__ == "__main__":
-    print(f"STDG Setup: Polynomial Order P = {P_ORDER}, Num Basis Funcs N_P = {N_P}")
+    print(f"STDG Setup: Polynomial Order P={P_ORDER}, DOFs/Element N_P={N_DOF_PER_ELEMENT}")
 
-    # --- Create a dummy mesh (REPLACE with your mesh generator) ---
-    # Example: 2 elements sharing an edge, plus boundary edges
-    # Correct vertex ordering for reference map: v0=(0,0), v1=(1,0), v2=(0,1)
-    # Element 0: Vertices (0,0), (0.5,0), (0.0,0.5) -> Indices 0, 1, 2
-    # Element 1: Vertices (0.5,0), (0.5,0.5), (0.0,0.5) -> Map needs care. Let's use different vertices for clarity.
-    # Element 1 Alt: Vertices (0.5,0), (1.0,0), (0.5,0.5) -> Indices 1, 3, 4 (if 3=(1,0), 4=(0.5,0.5))
-    # Let's stick to the simple 2-element square split along diagonal
-    dummy_verts = np.array([
-        [0.0, 0.0], [0.5, 0.0], [0.0, 0.5], [0.5, 0.5]
+    # --- Dummy Mesh Definition (CRITICAL: Replace with actual mesh generator output) ---
+    #     v2 (0, 0.5)
+    #     | \
+    #     |   \ Elem 0
+    #     |     \
+    # v0 (0, 0)----v1 (0.5, 0)
+    # Element 0: Vertices [0, 1, 2] -> Map ref (0,0)->v0, (1,0)->v1, (0,1)->v2
+    # Local Edges (Counter-Clockwise): 0:v0-v1, 1:v1-v2, 2:v2-v0
+    dummy_vertices_data = np.array([
+        [0.0, 0.0], [0.5, 0.0], [0.0, 0.5]
     ])
-    # Elem 0 uses verts 0, 1, 2. Maps ref (0,0)->0, (1,0)->1, (0,1)->2
-    # Elem 1 uses verts 1, 3, 2. Map ref (0,0)->1, (1,0)->3, (0,1)->2
-    dummy_elems = np.array([
-        [0, 1, 2], # Element 0: Lower left triangle
-        [1, 3, 2]  # Element 1: Upper right triangle
+    dummy_elements_data = np.array([
+        [0, 1, 2] # Single element
     ])
-    # Define edges based on VERTEX PAIRS (sorted tuple for uniqueness)
-    # Need normals and neighbor info carefully defined.
-    # Edge (0,1): Belongs to Elem 0 (local edge 0). Boundary. Normal [0, -1]
-    # Edge (1,2): Belongs to Elem 0 (local edge 1), Elem 1 (local edge 2). Normal [1, 1]/sqrt(2) wrt Elem 0.
-    # Edge (2,0): Belongs to Elem 0 (local edge 2). Boundary. Normal [-1, 0]
-    # Edge (1,3): Belongs to Elem 1 (local edge 0). Boundary. Normal [1, 0]
-    # Edge (3,2): Belongs to Elem 1 (local edge 1). Boundary. Normal [0, 1]
-    # Local edges: 0 -> v0-v1, 1 -> v1-v2, 2 -> v2-v0 (counter-clockwise)
-    dummy_edges = {
-        (0, 1): {'vertices': (0, 1), 'length': 0.5, 'normal': np.array([0.0,-1.0]),
-                 'elements': (0, -1), 'local_indices':(0, None)}, # Elem 0, Edge 0
-        (1, 2): {'vertices': (1, 2), 'length': np.sqrt(0.5**2+0.5**2), 'normal': np.array([0.5,0.5])/np.sqrt(0.5**2+0.5**2), # Normal wrt Elem 0: (t2-t1, x1-x2) -> (0.5, 0.5)
-                 'elements': (0, 1), 'local_indices':(1, 2)}, # Elem 0 Edge 1, Elem 1 Edge 2
-        (0, 2): {'vertices': (2, 0), 'length': 0.5, 'normal': np.array([-1.0,0.0]), # Swapped vertices to match key (0,2)
-                 'elements': (0, -1), 'local_indices':(2, None)}, # Elem 0, Edge 2
-        (1, 3): {'vertices': (1, 3), 'length': 0.5, 'normal': np.array([0.0, -1.0]), # Normal wrt Elem 1: (t3-t1, x1-x3) -> (-0.5, 0.0)? No, this edge uses v1,v3,v2 map. v1=(0.5,0),v3=(0.5,0.5),v2=(0,0.5) WRONG
-                 # Remap Elem 1: v0'=(0.5,0), v1'=(0.5,0.5), v2'=(0.0,0.5) - Uses global verts 1, 3, 2
-                 # Edge 0': v0'-v1' = (1)-(3). Normal = (t3-t1, x1-x3) = (0.5, 0.0). Len=0.5. Boundary.
-                 # Edge 1': v1'-v2' = (3)-(2). Normal = (t2-t3, x3-x2) = (0.0, 0.0)? No. (t2-t3, x3-x2) = (0.0, 0.0-0.5) = (0,-0.5). Len=0.5. Boundary.
-                 # Edge 2': v2'-v0' = (2)-(1). Normal = (t1-t2, x2-x1) = (-0.5, -0.5). Len=sqrt(0.5). Internal. Matches -(normal of edge (1,2))
-                 'normal': np.array([1.0, 0.0]), # Elem 1, Edge 0: Correct normal (0.5,0.5)-(0.5,0) -> [1,0] outward
-                 'elements': (1, -1), 'local_indices':(0, None)},
-        (2, 3): {'vertices': (3, 2), 'length': 0.5, 'normal': np.array([0.0, 1.0]), # Elem 1, Edge 1: (0.0,0.5)-(0.5,0.5) -> [0,1] outward
-                 'elements': (1, -1), 'local_indices':(1, None)},
-        # Edge (1, 2) handled above for Elem 1 as local edge 2
+    # Define edges: key=(sorted_vtx_idx_tuple), normal outward from first listed element
+    dummy_edge_map_data = {
+        (0, 1): { # Edge 0 (Local 0)
+            'vertices': (0, 1), 'length': 0.5, 'normal': np.array([0.0, -1.0]),
+            'elements': (0, -1), 'local_indices': (0, None)
+        },
+        (1, 2): { # Edge 1 (Local 1)
+            'vertices': (1, 2), 'length': np.sqrt(0.5**2 + 0.5**2), 'normal': np.array([0.5, 0.5]) / np.sqrt(0.5), # Normal: (t2-t1, x1-x2)
+            'elements': (0, -1), 'local_indices': (1, None)
+        },
+        (0, 2): { # Edge 2 (Local 2)
+            'vertices': (2, 0), 'length': 0.5, 'normal': np.array([-1.0, 0.0]), # Normal: (t0-t2, x2-x0)
+            'elements': (0, -1), 'local_indices': (2, None) # Corrected key order
+        }
     }
-    # Refined edge info needed for robust code
     # --- End Dummy Mesh ---
+
     try:
-        mesh = Mesh(dummy_verts, dummy_elems, dummy_edges)
+        test_mesh = MeshData(dummy_vertices_data, dummy_elements_data, dummy_edge_map_data)
     except Exception as e:
-        print(f"Error creating mesh object: {e}")
+        print(f"Fatal Error creating MeshData: {e}")
         exit()
 
+    ADVECTION_SPEED = 1.0
 
-    advection_speed = 1.0
-
-    # Assume some global coefficient vector U exists
+    # --- Test Assembly for Element 0 ---
+    test_element_index = 0
     try:
-        U_dummy = np.random.rand(mesh.num_elements, N_P) # Shape (2, 10)
+        test_element_verts = test_mesh.get_vertices_for_element(test_element_index)
+        # Create random coefficients for testing
+        test_element_coeffs = np.random.rand(N_DOF_PER_ELEMENT)
+        # Dummy global U (only one element here)
+        U_global_dummy = test_element_coeffs.reshape(1, -1)
     except Exception as e:
-        print(f"Error creating dummy U: {e}")
-        exit()
-
-
-    # --- Assemble and Plot for Element 0 ---
-    k_test = 0
-    try:
-        verts_k = mesh.get_element_vertices(k_test)
-        u_coeffs_k = U_dummy[k_test, :]
-    except IndexError:
-         print(f"Error: Cannot access element {k_test} data. Mesh definition likely incomplete.")
-         exit()
-    except Exception as e:
-         print(f"Error getting element data: {e}")
+         print(f"Fatal Error getting data for element {test_element_index}: {e}")
          exit()
 
+    print(f"\n--- Assembling for Element {test_element_index} ---")
+    print(f"Vertices:\n{test_element_verts}")
 
-    print(f"\nAssembling for Element {k_test} with vertices:\n{verts_k}")
+    matrix_M = compute_element_matrix_M(test_element_verts, ADVECTION_SPEED, poly_order=P_ORDER)
+    if matrix_M is not None:
+        print(f"\nLocal Matrix M^K (Shape: {matrix_M.shape})")
+        print(f"Top-Left 3x3:\n{matrix_M[:3,:3]}")
 
-    local_M_k = assemble_local_matrix(verts_k, advection_speed, p_order=P_ORDER)
-    if local_M_k is not None:
-        print(f"\nLocal Matrix M^K (shape {local_M_k.shape}):\n{local_M_k[:3,:3]}...")
+    rhs_R = compute_element_rhs_R(test_element_index, test_element_verts, test_element_coeffs,
+                                 test_mesh, U_global_dummy, ADVECTION_SPEED, poly_order=P_ORDER)
+    if rhs_R is not None:
+        print(f"\nLocal RHS R^K (Shape: {rhs_R.shape})")
+        print(f"First 3 elements:\n{rhs_R[:3]}")
 
-    print("\n assembling RHS requires proper neighbor lookup/BC")
-    local_R_k = assemble_local_rhs(k_test, verts_k, u_coeffs_k, mesh, U_dummy, advection_speed, p_order=P_ORDER)
-    if local_R_k is not None:
-        print(f"\nLocal RHS R^K (shape {local_R_k.shape}):\n{local_R_k[:3]}...")
-
-    # --- Add Plotting Call ---
-    if local_R_k is not None: # Only plot if assembly seemed okay
-        print("\nGenerating plot for element 0 with random coefficients...")
+    # --- Plotting Call ---
+    if rhs_R is not None:
+        print("\n--- Generating Plot (using random coefficients) ---")
         try:
-            plot_element_solution(verts_k, u_coeffs_k, p_order=P_ORDER)
-            plt.show() # Display the plot
+            fig, ax = plot_st_element_solution(test_element_verts, test_element_coeffs, poly_order=P_ORDER)
+            plt.show()
         except Exception as e:
-            print(f"Error during plotting: {e}")
-    # --- End Plotting Call ---
+            print(f"Plotting failed: {e}")
 
-    # --- Next steps would be: ---
-    # 1. Implement robust basis functions and quadrature.
-    # 2. Implement robust mesh generation with FULL connectivity info.
-    # 3. Loop through all elements to assemble GLOBAL M and R.
-    # 4. Apply Initial Conditions (project initial state onto basis functions).
-    # 5. Apply Boundary Conditions (modify global R, or handle in flux).
-    # 6. Solve the global system M U = R.
+    print("\n--- NOTE: This script only demonstrates local assembly. ---")
+    print("--- Full solver requires global assembly, ICs, BCs, and linear solve. ---")
+    print("--- Basis functions and quadrature are placeholders and need replacement! ---")
