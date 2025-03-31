@@ -1,3 +1,4 @@
+![STDG Solution in Element (Random Coefficients)](https://github.com/user-attachments/assets/23fd6c5a-1c03-4b53-b5e8-86ce5234ae11)
 # Space-Time Discontinuous Galerkin (STDG) - 1D Advection Components
 
 This repository contains Python code implementing core components for a Space-Time Discontinuous Galerkin (STDG) solver aimed at solving the 1D linear advection equation (`u_t + a u_x = 0`). The method discretizes the problem directly on a 2D space-time domain using triangular elements.
@@ -63,7 +64,6 @@ To develop this into a functional STDG solver:
 2.  Implement accurate 2D volume quadrature rules (e.g., using `quadpy`).
 3.  Integrate with a mesh generator that provides full element connectivity information in the format expected by the `Mesh` class.
 4.  Implement the global assembly loop to build the sparse global matrices `M` and `R`.
-![STDG Solution in Element (Random Coefficients)](https://github.com/user-attachments/assets/33e80720-f8f2-48ed-8588-2a962eec66d2)
 
 5.  Implement correct boundary condition handling during global assembly or RHS calculation.
 6.  Implement the projection of initial conditions onto the basis functions to get the starting state (relevant for elements intersecting t=0).
