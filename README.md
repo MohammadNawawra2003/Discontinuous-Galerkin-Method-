@@ -63,6 +63,8 @@ To develop this into a functional STDG solver:
 2.  Implement accurate 2D volume quadrature rules (e.g., using `quadpy`).
 3.  Integrate with a mesh generator that provides full element connectivity information in the format expected by the `Mesh` class.
 4.  Implement the global assembly loop to build the sparse global matrices `M` and `R`.
+![STDG Solution in Element (Random Coefficients)](https://github.com/user-attachments/assets/33e80720-f8f2-48ed-8588-2a962eec66d2)
+
 5.  Implement correct boundary condition handling during global assembly or RHS calculation.
 6.  Implement the projection of initial conditions onto the basis functions to get the starting state (relevant for elements intersecting t=0).
 7.  Add a sparse linear solver (e.g., `scipy.sparse.linalg.spsolve`) to solve `M U = R`.
