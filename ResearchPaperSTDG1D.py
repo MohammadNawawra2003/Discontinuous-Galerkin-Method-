@@ -1,563 +1,557 @@
 import numpy as np
-from scipy.special import roots_legendre, jacobi # Using SciPy for quadrature points
+import scipy.sparse as sp
 import matplotlib.pyplot as plt
-import matplotlib.tri as tri
-# Consider using quadpy for more robust/varied triangle quadrature rules if needed
-# import quadpy
+from scipy.special import legendre, roots_legendre # Added roots_legendre for L2 error calc later
+from scipy.signal import square
+from matplotlib.animation import FuncAnimation, FFMpegWriter
+from tqdm import tqdm
 
-# --- Configuration ---
-P_ORDER = 3  # Polynomial degree for basis functions
-N_DOF_PER_ELEMENT = (P_ORDER + 1) * (P_ORDER + 2) // 2  # Dofs per element (e.g., 10 for P=3)
+# --- Provided table (likely CFL limits or related coefficients) ---
+table = [
+    [1.0000, 1.0000, 1.2564, 1.3926, 1.6085], # p=0
+    [0, 0.3333, 0.4096, 0.4642, 0.5348],    # p=1
+    [0, 0, 0.2098, 0.2352, 0.2716],       # p=2
+    [0, 0, 0.1301, 0.1454, 0.1679],       # p=3 <= We use this row
+    [0, 0, 0.0897, 0.1000, 0.1155],       # p=4
+    [0, 0, 0.0661, 0.0736, 0.0851],       # p=5
+    [0, 0, 0.0510, 0.0568, 0.0656],       # p=6
+    [0, 0, 0.0407, 0.0453, 0.0523],       # p=7
+    [0, 0, 0.0334, 0.0371, 0.0428],       # p=8
+    [0, 0, 0.0279, 0.0310, 0.0358],       # p=9
+    [0, 0, 0.0237, 0.0264, 0.0304]        # p=10
+]
 
-# --- Reference Element Definition (Triangle: (0,0), (1,0), (0,1)) ---
 
-def evaluate_reference_basis(xi, eta, p_order=P_ORDER):
-    """
-    Evaluates basis functions at a point (xi, eta) on the reference triangle.
+# --- Time Stepping Functions ---
+def fwd_euler(u, Q, dt, m):
+    """ Solves du/dt = Q u using Forward Euler. u[0] is initial condition. """
+    for i in range(m):
+        u[i + 1] = u[i] + dt * Q.dot(u[i])
+    # Returns the solution history u at all time steps (shape m+1, N_dof)
+    return u
 
-    Args:
-        xi (float): Reference coordinate (in [0, 1]).
-        eta (float): Reference coordinate (in [0, 1]).
-        p_order (int): Polynomial order.
+def rk22(u, Q, dt, m):
+    """ Solves du/dt = Q u using RK22 (Midpoint/Heun). u[0] is initial condition. """
+    for i in range(m):
+        u_mid = u[i] + dt / 2. * Q.dot(u[i])
+        u[i + 1] = u[i] + dt * Q.dot(u_mid)
+        # The original formula was u[i+1] = u[i] + dt * Q.dot(u[i] + dt / 2. * Q.dot(u[i]))
+        # Let's use the more standard RK2 Heun form:
+        # k1 = Q.dot(u[i])
+        # k2 = Q.dot(u[i] + dt * k1)
+        # u[i+1] = u[i] + dt/2. * (k1 + k2)
+        # Or midpoint:
+        # k1 = Q.dot(u[i])
+        # k2 = Q.dot(u[i] + dt/2. * k1)
+        # u[i+1] = u[i] + dt * k2
+        # Let's stick to the midpoint version used above for consistency unless specified otherwise.
+    # Returns the solution history u at all time steps (shape m+1, N_dof)
+    return u
 
-    Returns:
-        np.ndarray: Array of basis values, shape (N_DOF_PER_ELEMENT,).
+def rk44(u, Q, dt, m):
+    """ Solves du/dt = Q u using classic RK44. u[0] is initial condition. """
+    for i in range(m):
+        K1 = Q.dot(u[i])
+        K2 = Q.dot(u[i] + K1 * dt / 2.)
+        K3 = Q.dot(u[i] + K2 * dt / 2.)
+        K4 = Q.dot(u[i] + K3 * dt)
+        u[i + 1] = u[i] + dt * (K1 + 2 * K2 + 2 * K3 + K4) / 6.
+    # Returns the solution history u at all time steps (shape m+1, N_dof)
+    return u
 
-    NOTE/TODO: This is a PLACEHOLDER using simple monomials (1, xi, eta, xi^2, ...).
-               This is NOT an orthogonal or nodal basis. Replace with a proper
-               implementation (e.g., using mapped Jacobi polynomials or a specific
-               nodal basis set like warp-and-blend) for actual DG calculations.
-    """
-    num_dofs = (p_order + 1) * (p_order + 2) // 2
-    # Check bounds with a small tolerance
-    if not (-1e-9 <= xi <= 1.0 + 1e-9 and -1e-9 <= eta <= 1.0 + 1e-9 and xi + eta <= 1.0 + 1e-9):
-        # Pass silently for now, could indicate issues with quadrature points
-        pass
 
-    basis_vals = np.zeros(num_dofs)
-    current_dof = 0
-    for degree_sum in range(p_order + 1):
-        for i in range(degree_sum + 1):
-            j = degree_sum - i
-            if current_dof < num_dofs:
-                # Use np.power for potentially better handling of 0^0 (though still check)
-                term_xi = np.power(xi, i) if i > 0 else (1.0 if abs(xi) < 1e-15 and i == 0 else 1.0) # Handle 0^0=1
-                term_eta = np.power(eta, j) if j > 0 else (1.0 if abs(eta) < 1e-15 and j == 0 else 1.0) # Handle 0^0=1
-                basis_vals[current_dof] = term_xi * term_eta
-                current_dof += 1
-            else:
-                # This break should technically not be needed if num_dofs is correct
-                break
-    if current_dof != num_dofs:
-        raise RuntimeError(f"Internal logic error: Basis function count mismatch. Expected {num_dofs}, generated {current_dof}")
-    return basis_vals
-
-def evaluate_reference_basis_gradients(xi, eta, p_order=P_ORDER):
-    """
-    Evaluates gradients (d/dxi, d/deta) of basis functions at (xi, eta) on ref triangle.
-
-    Args:
-        xi (float): Reference coordinate xi.
-        eta (float): Reference coordinate eta.
-        p_order (int): Polynomial order.
-
-    Returns:
-        np.ndarray: Gradients array, shape (N_DOF_PER_ELEMENT, 2). Columns are [d/dxi, d/deta].
-
-    NOTE/TODO: This is a PLACEHOLDER matching the monomial basis above.
-               Replace with gradients corresponding to your chosen basis set.
-    """
-    num_dofs = (p_order + 1) * (p_order + 2) // 2
-    if not (-1e-9 <= xi <= 1.0 + 1e-9 and -1e-9 <= eta <= 1.0 + 1e-9 and xi + eta <= 1.0 + 1e-9):
-        pass # Allow points near boundary
-
-    basis_grads = np.zeros((num_dofs, 2))
-    current_dof = 0
-    for degree_sum in range(p_order + 1):
-        for i in range(degree_sum + 1):
-            j = degree_sum - i
-            if current_dof < num_dofs:
-                # Pre-calculate powers carefully to handle 0^(negative) from derivative
-                xi_pow_i = np.power(xi, i) if i > 0 else (1.0 if abs(xi) < 1e-15 and i == 0 else 1.0)
-                eta_pow_j = np.power(eta, j) if j > 0 else (1.0 if abs(eta) < 1e-15 and j == 0 else 1.0)
-
-                xi_pow_im1 = np.power(xi, i-1) if i > 1 else (1.0 if i == 1 else 0.0)
-                eta_pow_jm1 = np.power(eta, j-1) if j > 1 else (1.0 if j == 1 else 0.0)
-
-                # d/dxi (term is i * xi^(i-1) * eta^j)
-                grad_xi = i * xi_pow_im1 * eta_pow_j if i > 0 else 0.0
-                # d/deta (term is xi^i * j * eta^(j-1))
-                grad_eta = xi_pow_i * j * eta_pow_jm1 if j > 0 else 0.0
-
-                basis_grads[current_dof, 0] = grad_xi
-                basis_grads[current_dof, 1] = grad_eta
-                current_dof += 1
-            else:
-                break
-    if current_dof != num_dofs:
-        raise RuntimeError(f"Internal logic error: Basis gradient count mismatch. Expected {num_dofs}, generated {current_dof}")
-    return basis_grads
-
-# --- Quadrature Rules ---
-
-def get_triangle_quadrature_rule(required_degree):
-    """
-    Returns 2D quadrature points and weights for the reference triangle (0,0),(1,0),(0,1).
-
-    Args:
-        required_degree (int): Integrate polynomials up to this degree exactly.
-
-    Returns:
-        tuple: (xi_coords, eta_coords, weights) - Weights scaled to sum to 0.5 (area).
-
-    NOTE/TODO: Using placeholder. Strongly recommend using a library like 'quadpy'
-               or known high-degree rules (e.g., Dunavant).
-               `scheme = quadpy.t2.get_good_scheme(required_degree)`
-               `points, weights = scheme.points, scheme.weights * 0.5`
-    """
-    print(f"Note: Requesting volume quadrature for degree {required_degree}.")
-    if required_degree < 6: # Required degree for P=3 assembly is 2*P_ORDER = 6
-         print(f"CRITICAL WARNING: Using placeholder quadrature insufficient for P={P_ORDER}. Results WILL BE WRONG.")
-         # Fallback to a known degree 3 rule (4 points) - NOT ACCURATE ENOUGH
-         weights = np.array([ -27.0/96.0, 25.0/96.0, 25.0/96.0, 25.0/96.0])
-         weights *= 0.5 / np.sum(weights) # Ensure sum is 0.5
-         xi_coords  = np.array([1.0/3.0, 0.6, 0.2, 0.2])
-         eta_coords = np.array([1.0/3.0, 0.2, 0.6, 0.2])
-         return xi_coords, eta_coords, weights
-    elif required_degree >= 6:
-         print(f"CRITICAL WARNING: Using placeholder quadrature insufficient for P={P_ORDER}. Results WILL BE WRONG.")
-         # Using a known degree 5 rule (7 points) - Still NOT accurate enough for 2P=6!
-         # Replace this with a correct rule for degree 6 or higher from quadpy/literature.
-         w_ = np.array([0.125939180544827,+0.132394152788506,+0.132394152788506,
-                        +0.132394152788506,+0.058959942643300,+0.058959942643300,
-                        +0.058959942643300])
-         xi_ = np.array([1/3.,0.797426985353087,0.101286507323456,0.101286507323456,
-                         0.059715871789770,0.470142064105115,0.470142064105115])
-         eta_ = np.array([1/3.,0.101286507323456,0.797426985353087,0.101286507323456,
-                          0.470142064105115,0.059715871789770,0.470142064105115])
-         weights = w_ * 0.5 / np.sum(w_) # Scale weights to sum to 0.5
-         return xi_, eta_, weights
+# --- DG Matrix Building Function ---
+def build_matrix(n, p, a):
+    """ Builds the DG stiffness matrix L for periodic BCs. """
+    # D matrix (derivative term)
+    diags_of_D = [2 * np.ones(p - 2 * i) for i in range((p + 1) // 2)]
+    offsets_of_D = -np.arange(1, p + 1, 2)
+    # Handle p=0 case explicitly
+    if p == 0:
+        D = sp.bsr_matrix((1, 1)) # 1x1 zero matrix
     else:
-         raise ValueError(f"Volume quadrature degree {required_degree} not implemented.")
+        D = sp.diags([np.zeros(p + 1)] + diags_of_D, np.r_[0, offsets_of_D], format='bsr') # Ensure bsr
+
+    # A matrix (Alternating +/- 1)
+    A = np.ones((p + 1, p + 1))
+    A[1::2, ::2] = -1.
+    A[::2, 1::2] = -1.
+    A = sp.bsr_matrix(A)
+
+    # B matrix (Alternating +/- 1 in columns)
+    B = np.ones((p + 1, p + 1))
+    B[:, 1::2] = -1.
+    B = sp.bsr_matrix(B)
+
+    # I matrix (All ones - used for identity term scaling)
+    # Correction: Should be Identity matrix, not all ones for the term -(1-a)/2 * I
+    # However, the code structure implies it's using P_i(1) or P_i(-1) properties.
+    # Let's keep the original I matrix as all ones based on the code's formula structure.
+    I = np.ones((p + 1, p + 1))
+    I = sp.bsr_matrix(I)
+
+    # Flux terms depend on parameter 'a' (upwind parameter)
+    # a=1 -> Upwind flux for c>0 (takes from left)
+    # a=-1 -> Downwind flux for c>0 (takes from right)
+    # a=0 -> Centered flux (average)
+    mat_lft = -(1. + a) / 2. * B.T # Coefficient for left neighbor contribution
+    mat_rgt = +(1. - a) / 2. * B  # Coefficient for right neighbor contribution
+    # Diagonal block: includes derivative, and interface terms from left and right
+    mat_ctr = D.T + (1. + a) / 2. * A - (1. - a) / 2. * I
+
+    # Assemble the global block matrix L with periodic boundary conditions
+    blocks = []
+    for i in range(n):
+        this_row = []
+        for j in range(n):
+            if (j == i - 1) or (i == 0 and j == n - 1): # Left neighbor (with wrap around)
+                this_row.append(mat_lft)
+            elif j == i:                                 # Diagonal block
+                this_row.append(mat_ctr)
+            elif (j == i + 1) or (i == n - 1 and j == 0): # Right neighbor (with wrap around)
+                this_row.append(mat_rgt)
+            else:                                        # Zero block
+                this_row.append(None) # None interpreted as zero block by sp.bmat
+        blocks.append(this_row)
+
+    L_stiff = sp.bmat(blocks, format='bsr', dtype=np.float64) # Specify dtype
+    return L_stiff
 
 
-def get_line_quadrature_rule(required_degree):
+# --- Initial Condition Projection ---
+def compute_coefficients(f, L, n, p):
+    """ Computes initial DG coefficients by L2 projection using 5-point Gauss quadrature. """
+    # 5-point Gauss-Legendre weights and points on [-1, 1]
+    w_quad = np.array([+0.5688888888888889, +0.4786286704993665, +0.4786286704993665, +0.2369268850561891, +0.2369268850561891])
+    s_quad = np.array([+0.0000000000000000, -0.5384693101056831, +0.5384693101056831, -0.9061798459386640, +0.9061798459386640])
+    dx = L / n
+    psi_basis = [legendre(i) for i in range(p + 1)] # Legendre basis polynomials
+
+    u_coeffs = np.zeros((n, p + 1)) # Array to store coefficients (n_elements, p+1)
+    for k in range(n): # Loop over elements
+        x_left = k * dx
+        # Map quadrature points s_l from [-1, 1] to physical coordinates xsi in element k
+        x_quad_k = x_left + (s_quad + 1.0) * dx / 2.0
+
+        for i in range(p + 1): # Loop over basis functions P_i
+            # Evaluate f at physical quadrature points
+            f_vals = f(x_quad_k, L) # Pass L if needed by f
+            # Evaluate P_i at reference quadrature points
+            psi_vals = psi_basis[i](s_quad)
+            # Compute integral using quadrature: sum(w_q * f(x_q) * P_i(s_q))
+            integral = np.dot(w_quad, f_vals * psi_vals)
+
+            # Apply normalization factor (2i+1)/2 and jacobian scaling (dx/2)
+            # Formula for coefficient: u_k^i = ((2i+1)/2) / (dx/2) * ∫_elem f(x) P_i(ξ(x)) dx
+            #                               = (2i+1)/dx * ∫_elem f(x) P_i(ξ(x)) dx
+            # The integral approx ∫ f(x(s)) P_i(s) * (dx/2) ds = integral_value * (dx/2)
+            # So u_k^i = (2i+1)/dx * integral_value * (dx/2) = (2i+1)/2 * integral_value
+            # Let's re-check the original code's logic.
+            # Original: u[k, i] += w[l] * 1./2. * f(xsi, L) * psi[i](s[l]) -> This is missing jacobian dx/2
+            # Original: u[k, i] *= (2 * i + 1) -> This applies (2i+1) factor
+            # It seems the original compute_coefficients was missing the jacobian dx/2 inside the loop
+            # and the factor 1/2. Let's use the formula u_k^i = ( (2i+1)/2 ) * integral_value
+            # where integral_value is the quadrature sum of f(x(s)) * P_i(s) * w_q
+            # No, the factor is u_k^i = (2i+1) / norm(P_i)^2 * integral(f * P_i * dx)
+            # norm(P_i)^2 = integral(P_i^2 * dx) = (dx/2) * integral(P_i^2 * ds) = (dx/2) * (2/(2i+1)) = dx/(2i+1)
+            # So u_k^i = (2i+1) / (dx/(2i+1)) * integral(f * P_i * dx) ?? No.
+            # L2 projection: find u_h = sum u_i phi_i such that integral((u - u_h) * phi_j * dx) = 0 for all j
+            # integral(u * phi_j * dx) = integral( (sum u_i phi_i) * phi_j * dx )
+            # integral(u * phi_j * dx) = sum u_i * integral(phi_i * phi_j * dx)
+            # integral(u * phi_j * dx) = u_j * integral(phi_j^2 * dx)  (using orthogonality)
+            # integral(u * phi_j * dx) = u_j * (dx / (2j+1))
+            # So, u_j = ( (2j+1) / dx ) * integral(u * phi_j * dx)
+            # integral(u * phi_j * dx) = integral_{-1}^1 u(x(s)) phi_j(s) * (dx/2) ds
+            # integral approx = sum_q w_q * u(x(s_q)) * phi_j(s_q) * (dx/2)
+            # u_j = ( (2j+1) / dx ) * (dx/2) * sum_q w_q * u(x(s_q)) * phi_j(s_q)
+            # u_j = ( (2j+1) / 2 ) * sum_q w_q * u(x(s_q)) * phi_j(s_q)
+            u_coeffs[k, i] = (2 * i + 1) / 2.0 * integral
+
+    # Reshape to a flat vector (N_dof = n * (p+1)) for the solver
+    return u_coeffs.reshape(n * (p + 1))
+
+
+# --- Main DG Solver Function (Method of Lines) ---
+def advection1d(L, n, dt, m, p, c, f, a, rktype, anim=False, save=False, tend=0.):
     """
-    Returns 1D Gauss-Legendre quadrature points/weights on [-1, 1].
+    Solves the 1D advection equation using DG with Method of Lines.
 
     Args:
-        required_degree (int): Integrate polynomials up to this degree exactly.
+        L: Domain length
+        n: Number of elements
+        dt: Time step
+        m: Number of time steps
+        p: Polynomial degree
+        c: Advection speed
+        f: Initial condition function f(x, L)
+        a: Upwind parameter for build_matrix (1.0 for upwind if c>0)
+        rktype: Time integration method ('ForwardEuler', 'RK22', 'RK44')
+        anim: Boolean flag to generate animation
+        save: Boolean flag to save animation
+        tend: Final time (used for animation plotting)
 
     Returns:
-        tuple: (points, weights) on interval [-1, 1].
+        Array of DG coefficients over time, shape (p+1, n, m+1)
     """
-    num_points = int(np.ceil((required_degree + 1) / 2))
-    if num_points < 1: num_points = 1 # Ensure at least one point
-    points, weights = roots_legendre(num_points)
-    return points, weights
+    # Build necessary matrices
+    # Inverse mass matrix M^-1 (diagonal for Legendre basis)
+    # M_ij = integral(phi_i * phi_j * dx) = delta_ij * (dx / (2i+1))
+    # (M^-1)_ii = (2i+1) / dx
+    # The code uses inv_mass_matrix = diag(2i+1) and then Q = -c * (n/L) * M_inv * L_stiff
+    # where n/L = 1/dx. So Q = -c * (1/dx) * diag(2i+1) * L_stiff.
+    # This matches the required scaling (2i+1)/dx in M^-1.
+    inv_mass_matrix_diag_term = np.arange(1, 2 * p + 2, 2) # 1, 3, 5, ... (2p+1)
+    inv_mass_matrix_diag = np.tile(inv_mass_matrix_diag_term, n)
+    inv_mass_matrix = sp.diags([inv_mass_matrix_diag], [0], format='bsr', dtype=np.float64) # Specify dtype
 
-# --- Coordinate Mapping ---
+    # Stiffness/Flux matrix L
+    stiff_matrix = build_matrix(n, p, a) # This is L = S-F
 
-def calculate_affine_mapping(element_vertices):
-    """
-    Calculates Jacobian details for the map from ref triangle to physical element.
+    # RHS matrix Q for ODE system dU/dt = Q U
+    Q = -c * (n / L) * inv_mass_matrix.dot(stiff_matrix) # Note n/L = 1/dx
 
-    Args:
-        element_vertices (np.ndarray): (3, 2) array of physical vertex coordinates
-                                        [[x0, t0], [x1, t1], [x2, t2]].
+    # --- Time Integration ---
+    N_dof = n * (p + 1)
+    # Ensure u_history has the correct float type
+    u_history = np.zeros((m + 1, N_dof), dtype=np.float64) # Array to store solution vectors at each time step
 
-    Returns:
-        tuple: (jacobian, inverse_jacobian, determinant)
-    """
-    v0, v1, v2 = element_vertices[0, :], element_vertices[1, :], element_vertices[2, :]
+    # Set initial condition
+    u_history[0] = compute_coefficients(f, L=L, n=n, p=p)
 
-    # Jacobian J = [[dx/dxi, dx/deta], [dt/dxi, dt/deta]]
-    jacobian = np.array([
-        [v1[0] - v0[0], v2[0] - v0[0]],
-        [v1[1] - v0[1], v2[1] - v0[1]]
-    ])
+    # Perform time stepping
+    print(f"Starting time integration ({rktype})...")
+    if rktype == 'ForwardEuler':
+        fwd_euler(u_history, Q, dt, m)
+    elif rktype == 'RK22':
+        rk22(u_history, Q, dt, m)
+    elif rktype == 'RK44':
+        # Use tqdm for RK44 progress bar
+        for i in tqdm(range(m), desc=f"RK44 Steps", unit="step"):
+            K1 = Q.dot(u_history[i])
+            K2 = Q.dot(u_history[i] + K1 * dt / 2.)
+            K3 = Q.dot(u_history[i] + K2 * dt / 2.)
+            K4 = Q.dot(u_history[i] + K3 * dt)
+            u_history[i + 1] = u_history[i] + dt * (K1 + 2 * K2 + 2 * K3 + K4) / 6.
+        # rk44(u_history, Q, dt, m) # Keep the original function structure if preferred
+    else:
+        print(f"Error: The integration method '{rktype}' is not recognized.")
+        print("       Should be 'ForwardEuler', 'RK22', or 'RK44'")
+        raise ValueError
+    print("Time integration finished.")
 
-    determinant = np.linalg.det(jacobian)
+    # Reshape the result for easier handling: (p+1, n_elements, n_timesteps+1)
+    u_final_reshaped = u_history.T.reshape((n, p + 1, m + 1))
+    u_final_reshaped = np.swapaxes(u_final_reshaped, 0, 1) # Swap axes 0 and 1 -> (p+1, n, m+1)
 
-    # Check for degenerate or flipped elements
-    if abs(determinant) < 1e-14:
-        area = 0.5 * abs(v0[0]*(v1[1]-v2[1]) + v1[0]*(v2[1]-v0[1]) + v2[0]*(v0[1]-v1[1]))
-        if area < 1e-14:
-             raise ValueError(f"Degenerate element vertices (Area ~ 0): {element_vertices}")
-        else:
-             # Determinant near zero suggests sliver element, could cause numerical issues
-             print(f"Warning: Jacobian determinant {determinant:.2e} near zero for element {element_vertices}. Area={area:.2e}")
+    # Optional animation
+    if anim:
+        # Define font sizes for plotting if not globally defined
+        global ftSz1, ftSz2, ftSz3
+        try:
+           ftSz1, ftSz2, ftSz3 # Check if they exist
+        except NameError:
+           print("Setting default font sizes for animation.")
+           ftSz1, ftSz2, ftSz3 = 20, 17, 14 # Default values
+           plt.rcParams["text.usetex"] = True
+           plt.rcParams['font.family'] = 'serif'
 
-    if determinant <= 0:
-         print(f"Warning: Element {element_vertices} has non-positive Jacobian determinant {determinant:.2e}. Check vertex ordering (should be counter-clockwise).")
-         # Depending on strictness, could raise error here
+        plot_function(u_final_reshaped, L=L, n=n, dt=dt, m=m, p=p, c=c, f=f, save=save, tend=tend)
 
-    # Inverse Jacobian
-    inv_jacobian = np.array([
-        [ jacobian[1, 1], -jacobian[0, 1]],
-        [-jacobian[1, 0],  jacobian[0, 0]]
-    ]) / determinant # Apply determinant division
-
-    return jacobian, inv_jacobian, determinant
+    return u_final_reshaped
 
 
-def transform_reference_gradients(ref_grads, inv_jacobian):
-    """ Maps gradients from reference (xi, eta) to physical (x, t) coordinates. """
-    # Input ref_grads shape: (N_DOF_PER_ELEMENT, 2)
-    # Formula: [d/dx, d/dt] = [d/dxi, d/deta] @ J_inv
-    phys_grads = ref_grads @ inv_jacobian
-    return phys_grads # Shape: (N_DOF_PER_ELEMENT, 2)
+# --- Animation Function ---
+# Note: This function is kept for potential future use but is not called when anim=False
+def plot_function(u, L, n, dt, m, p, c, f, save=False, tend=0.):
+    """ Creates animation of the DG solution vs exact solution. """
+    n_plot = 100 # Points per element for smooth plotting
+    v = np.zeros((n, m + 1, n_plot + 1)) # Reconstructed solution values
+    r = np.linspace(-1, 1, n_plot + 1) # Reference element coordinates
+    psi = np.array([legendre(i)(r) for i in range(p + 1)]).T # Basis functions evaluated at plot points
+    dx = L / n
+    full_x = np.linspace(0., L, n * n_plot + 1) # Global x coordinates for plotting
 
+    # Reconstruct solution u(x,t) from coefficients for all times and elements
+    print("Reconstructing solution for animation...")
+    for time_idx in tqdm(range(m + 1), desc="Reconstructing Frames"):
+        for elem_idx in range(n):
+            # u has shape (p+1, n, m+1)
+            coeffs_at_time_elem = u[:, elem_idx, time_idx]
+            v[elem_idx, time_idx, :] = np.dot(psi, coeffs_at_time_elem)
 
-# --- Mesh Data Structure (Conceptual) ---
+    fig, ax = plt.subplots(1, 1, figsize=(8., 4.5))
+    fig.tight_layout()
+    ax.grid(ls=':')
 
-class MeshData:
-    """ Simple container for mesh data. Needs population from a mesh generator. """
-    def __init__(self, vertices, elements, edge_map):
-        """
-        Args:
-            vertices (np.ndarray): (N_verts, 2) coordinates [x, t].
-            elements (np.ndarray): (N_elems, 3) vertex indices per element.
-            edge_map (dict): Maps edge key (e.g., sorted vertex tuple) to info:
-                             {'vertices':(v1,v2), 'length':L, 'normal':n,
-                              'elements':(e1, e2), 'local_indices':(loc1, loc2)}
-                              e2=-1 for boundary. Normal points out from e1.
-        """
-        self.vertices = vertices
-        self.elements = elements
-        self.num_elements = elements.shape[0]
-        self.edge_map = edge_map # Assumes this map is complete and correct
-
-        self.element_vertices_coords = np.array([vertices[el_verts] for el_verts in elements])
-        self.edges_per_element = self._build_edge_list_per_element()
-
-    def _build_edge_list_per_element(self):
-        """ Helper to organize edge info by element index. """
-        edges_by_elem = [[] for _ in range(self.num_elements)]
-        if not self.edge_map:
-            print("Warning (Mesh): Edge map is empty, cannot build edge list per element.")
-            return edges_by_elem
-
-        for edge_key, info in self.edge_map.items():
-            try:
-                el1_idx, el2_idx = info['elements']
-                loc1_idx, loc2_idx = info['local_indices']
-
-                # Info for element 1
-                edges_by_elem[el1_idx].append({
-                    'edge_key': edge_key,
-                    'local_idx': loc1_idx,
-                    'normal': info['normal'], # Normal outward from el1
-                    'length': info['length'],
-                    'neighbor_element': el2_idx,
-                    'neighbor_local_idx': loc2_idx
-                })
-                # Info for element 2 (if internal)
-                if el2_idx != -1:
-                    edges_by_elem[el2_idx].append({
-                        'edge_key': edge_key,
-                        'local_idx': loc2_idx,
-                        'normal': -info['normal'], # Normal outward from el2
-                        'length': info['length'],
-                        'neighbor_element': el1_idx,
-                        'neighbor_local_idx': loc1_idx
-                    })
-            except KeyError as e:
-                 print(f"Error processing edge {edge_key}: Missing key {e} in edge_map info.")
-            except IndexError as e:
-                 print(f"Error processing edge {edge_key}: Element index out of bounds? {e}")
-        # Sanity check: each element should have 3 edges listed
-        for k, edges in enumerate(edges_by_elem):
-            if len(edges) != 3:
-                print(f"Warning (Mesh): Element {k} has {len(edges)} edges associated, expected 3.")
-        return edges_by_elem
-
-    def get_vertices_for_element(self, element_index):
-        """ Get coordinates of vertices for element k. """
-        if not (0 <= element_index < self.num_elements):
-            raise IndexError(f"Element index {element_index} out of range.")
-        return self.element_vertices_coords[element_index]
-
-    def get_edge_info_for_element(self, element_index):
-        """ Get list of edge info dictionaries for element k. """
-        if not (0 <= element_index < self.num_elements):
-            raise IndexError(f"Element index {element_index} out of range.")
-        return self.edges_per_element[element_index]
-
-# --- Numerical Flux ---
-
-def flux_lax_friedrichs(u_in, u_out, normal_vec, wave_speed_a):
-    """ Calculates Lax-Friedrichs flux for u_t + a u_x = 0 in space-time. """
-    nx, nt = normal_vec[0], normal_vec[1]
-    # Physical flux component normal to the edge: F(u) . n = (a*u*nx + u*nt)
-    flux_phys_in = (wave_speed_a * nx + nt) * u_in
-    flux_phys_out = (wave_speed_a * nx + nt) * u_out
-
-    # Max wave speed normal to edge (alpha in LF formula)
-    # C = | F'(u) . n | = | (a*nx + nt) |
-    max_normal_speed = abs(wave_speed_a * nx + nt)
-
-    # LF Flux: 0.5 * (F_n(in) + F_n(out)) - 0.5 * C * (u_out - u_in)
-    numerical_flux = 0.5 * (flux_phys_in + flux_phys_out) - 0.5 * max_normal_speed * (u_out - u_in)
-    return numerical_flux
-
-# --- Local Element Assembly ---
-
-def compute_element_matrix_M(element_verts, wave_speed_a, poly_order=P_ORDER):
-    """ Assembles local matrix M^K for ∫∫ φ_j (a ∂φ_i/∂x + ∂φ_i/∂t) dx dt. """
-    num_dofs = (poly_order + 1) * (poly_order + 2) // 2
-    element_M = np.zeros((num_dofs, num_dofs))
-
-    # Quadrature degree needed: (P-1) + P = 2P-1. Use 2P for safety.
-    quad_degree = 2 * poly_order
+    # Ensure font sizes are defined
+    global ftSz1, ftSz2, ftSz3
     try:
-        xi_q, eta_q, w_q = get_triangle_quadrature_rule(quad_degree)
-    except ValueError as e:
-        print(f"Assembly failed: {e}")
-        return None
-    num_quad_points = len(w_q)
+       ftSz1, ftSz2, ftSz3
+    except NameError:
+       ftSz1, ftSz2, ftSz3 = 20, 17, 14
+       plt.rcParams["text.usetex"] = True # Assume tex is available
+       plt.rcParams['font.family'] = 'serif'
 
-    try:
-        _, inv_J, det_J = calculate_affine_mapping(element_verts)
-    except ValueError as e:
-        print(f"Assembly failed for element {element_verts}: {e}")
-        return None
+    time_template = r'$t = \mathtt{{{:.3f}}} \;[s]$' # Use more precision for time display
+    time_text = ax.text(0.815, 0.92, '', fontsize=ftSz1, transform=ax.transAxes)
 
-    for q_idx in range(num_quad_points):
-        xi, eta, w = xi_q[q_idx], eta_q[q_idx], w_q[q_idx]
+    # Create lines for each element's solution segment
+    lines = [ax.plot([], [], color='C0')[0] for _ in range(n)]
+    # Create line for exact solution
+    # Need to handle periodic boundary for exact solution display
+    exact_func = lambda x, t: f(np.mod(x - c * t, L), L) # Periodically wrapped exact solution
+    exact, = ax.plot([], [], color='C1', alpha=0.5, lw=5, zorder=0, label='Exact')
+    # Set plot limits based on initial exact solution
+    initial_exact_y = exact_func(full_x, 0)
+    ymin = min(initial_exact_y) - 0.5 * (max(initial_exact_y)-min(initial_exact_y)) if max(initial_exact_y)!=min(initial_exact_y) else min(initial_exact_y)-0.5
+    ymax = max(initial_exact_y) + 0.5 * (max(initial_exact_y)-min(initial_exact_y)) if max(initial_exact_y)!=min(initial_exact_y) else max(initial_exact_y)+0.5
+    ax.set_ylim(ymin, ymax)
 
-        # Evaluate basis and gradients at quadrature point (reference)
-        basis_at_q = evaluate_reference_basis(xi, eta, poly_order)       # Shape (N_DOF,)
-        grads_at_q_ref = evaluate_reference_basis_gradients(xi, eta, poly_order) # Shape (N_DOF, 2)
+    ax.set_xlabel(r"$x$", fontsize=ftSz2)
+    ax.set_ylabel(r"$u(x,t)$", fontsize=ftSz2)
+    ax.legend()
+    fig.subplots_adjust(left=0.08, right=0.995, bottom=0.11, top=0.995)
 
-        # Transform gradients to physical coordinates (x, t)
-        grads_at_q_phys = transform_reference_gradients(grads_at_q_ref, inv_J) # Shape (N_DOF, 2)
-        dphi_dx = grads_at_q_phys[:, 0]
-        dphi_dt = grads_at_q_phys[:, 1]
+    def init():
+        """ Initializes the animation plot. """
+        exact.set_data(full_x, exact_func(full_x, 0))
+        time_text.set_text(time_template.format(0))
+        for k, line in enumerate(lines):
+            # Set x data for each element's line segment
+            x_elem = np.linspace(k * dx, (k + 1) * dx, n_plot + 1)
+            line.set_data(x_elem, v[k, 0, :])
+        return tuple([*lines, exact, time_text])
 
-        # Compute M_ij = Sum_q [ weight_q * detJ * basis_j(q) * (a*d(basis_i)/dx + d(basis_i)/dt) ]
-        term_i = wave_speed_a * dphi_dx + dphi_dt # Shape (N_DOF,)
-        # contribution = np.outer(term_i, basis_at_q) # contribution[i, j] = term_i[i] * basis_at_q[j]
-        # outer product gives M[i,j] = term_i[i] * basis_at_q[j]
-        element_M += np.outer(term_i, basis_at_q) * w * det_J
+    def animate(t_idx):
+        """ Updates the plot for frame t_idx. """
+        current_time = t_idx * dt
+        exact.set_ydata(exact_func(full_x, current_time))
+        time_text.set_text(time_template.format(current_time))
+        for k, line in enumerate(lines):
+            line.set_ydata(v[k, t_idx, :])
+        # pbar_anim.update(1) # Update animation progress bar
+        return tuple([*lines, exact, time_text])
 
-    return element_M
+    # Animation setup
+    fps = 25 # Frames per second for animation
+    num_frames = m + 1
+    interval = 1000 / fps # Interval in ms
 
-def compute_element_rhs_R(elem_idx, element_verts, element_coeffs, mesh_data, global_coeffs_U, wave_speed_a, poly_order=P_ORDER):
-    """ Assembles local RHS vector R^K for ∫_{∂K} F̂_n(u^-, u^+) φ_i ds. """
-    num_dofs = (poly_order + 1) * (poly_order + 2) // 2
-    element_R = np.zeros(num_dofs)
+    print("Creating animation...")
+    # pbar_anim = tqdm(total=num_frames, desc="Animating Frames") # Separate progress bar for animation
+    # init() # Call init manually before FuncAnimation can be helpful
+    anim = FuncAnimation(fig, animate, frames=num_frames, interval=interval, blit=False,
+                         init_func=init, repeat=False) # Use init_func here
 
-    # Quadrature degree for edge integrals: approx degree P * degree P = 2P
-    edge_quad_degree = 2 * poly_order
-    try:
-        edge_qp, edge_qw = get_line_quadrature_rule(edge_quad_degree) # Points on [-1, 1]
-    except ValueError as e:
-        print(f"Assembly failed: {e}")
-        return None
-    num_edge_qp = len(edge_qp)
+    if save:
+        anim_filename = f"./figures/dg_advection_p{p}_n{n}_{rktype}.mp4"
+        # Ensure figure directory exists
+        import os
+        if not os.path.exists('./figures'):
+             os.makedirs('./figures')
+        print(f"Saving animation to {anim_filename}...")
+        writerMP4 = FFMpegWriter(fps=fps)
+        try:
+            anim.save(anim_filename, writer=writerMP4)
+            print("Animation saved.")
+        except Exception as e:
+            print(f"Error saving animation: {e}")
+            print("Ensure FFmpeg is installed and in your system's PATH.")
+    else:
+        plt.show()
 
-    # Get edge information for the current element
-    edges_info = mesh_data.get_edge_info_for_element(elem_idx)
-    if not edges_info: return element_R # Skip if no edge info available
-
-    # Parametrization functions for edges 0, 1, 2 of reference triangle
-    ref_edge_param_funcs = [
-        lambda s: (s, 0.0),         # Edge 0 (xi=s, eta=0)
-        lambda s: (1.0 - s, s),     # Edge 1 (xi=1-s, eta=s)
-        lambda s: (0.0, 1.0 - s)     # Edge 2 (xi=0, eta=1-s)
-        # Parameter 's' runs from 0 to 1 along the edge
-    ]
-
-    for edge in edges_info:
-        local_idx = edge['local_idx']
-        normal_phys = edge['normal'] # Physical outward normal for this element
-        edge_len = edge['length']
-        neighbor_idx = edge['neighbor_element']
-
-        # Jacobian for 1D integral on edge: length_physical / length_reference = edge_len / 2.0
-        edge_jacobian_1d = edge_len / 2.0
-        if abs(edge_jacobian_1d) < 1e-14: continue # Skip zero-length edges
-
-        param_func = ref_edge_param_funcs[local_idx]
-
-        for q_idx in range(num_edge_qp):
-            sq, wq = edge_qp[q_idx], edge_qw[q_idx] # Quadrature point/weight on [-1, 1]
-            s_param = (sq + 1.0) / 2.0 # Map point from [-1, 1] to parameter [0, 1]
-
-            # Get reference coords (xi, eta) on the edge
-            xi_q, eta_q = param_func(s_param)
-
-            # Evaluate basis functions at this point on the edge (in reference coords)
-            basis_vals_at_q = evaluate_reference_basis(xi_q, eta_q, poly_order) # Shape (N_DOF,)
-
-            # Evaluate solution from THIS element ('u_minus') at the point
-            u_minus_at_q = np.dot(basis_vals_at_q, element_coeffs)
-
-            # Evaluate solution from NEIGHBOR element ('u_plus') at the point
-            u_plus_at_q = 0.0 # Default for boundary or error
-            if neighbor_idx != -1:
-                # Internal edge: Get neighbor's coefficients
-                try:
-                    neighbor_coeffs = global_coeffs_U[neighbor_idx, :]
-                    # Evaluate neighbor's solution using *same* basis values at corresponding point
-                    # ASSUMES basis functions align correctly across edge
-                    u_plus_at_q = np.dot(basis_vals_at_q, neighbor_coeffs)
-                except IndexError:
-                    print(f"Error: Neighbor index {neighbor_idx} out of bounds accessing global_coeffs_U.")
-                    u_plus_at_q = u_minus_at_q # Fallback: Use own state (can cause issues)
-                except Exception as e:
-                    print(f"Unexpected error getting neighbor state: {e}")
-                    u_plus_at_q = u_minus_at_q # Fallback
-            else:
-                # Boundary edge: Apply Boundary Condition through u_plus
-                # Placeholder: Zero inflow condition
-                char_speed_normal = wave_speed_a * normal_phys[0] + normal_phys[1]
-                if char_speed_normal < -1e-9: # Characteristic points strictly inward
-                    u_plus_at_q = 0.0 # Prescribe external state (e.g., zero)
-                else: # Characteristic points outward or tangential
-                    u_plus_at_q = u_minus_at_q # Use internal state (effectively sets flux based on u_minus only)
-
-            # Calculate the numerical flux value at the quadrature point
-            flux_val_at_q = flux_lax_friedrichs(u_minus_at_q, u_plus_at_q, normal_phys, wave_speed_a)
-
-            # Add contribution to the RHS vector R_i += Sum_q [ wq * jac_1d * flux_val * basis_i(q) ]
-            element_R += flux_val_at_q * basis_vals_at_q * wq * edge_jacobian_1d
-
-    return element_R
-
-# --- Plotting ---
-def plot_st_element_solution(element_verts, element_coeffs, poly_order=P_ORDER, plot_resolution=15):
-    """ Creates a contour plot of the DG solution within one space-time triangle. """
-    num_dofs = (poly_order + 1) * (poly_order + 2) // 2
-    if len(element_coeffs) != num_dofs:
-        raise ValueError(f"Coefficient array size mismatch. Expected {num_dofs}, got {len(element_coeffs)}")
-
-    # 1. Create evaluation points in reference coordinates
-    xi_linspace = np.linspace(0, 1, plot_resolution)
-    eta_linspace = np.linspace(0, 1, plot_resolution)
-    xi_grid, eta_grid = np.meshgrid(xi_linspace, eta_linspace)
-    mask = xi_grid + eta_grid <= 1.0 + 1e-9 # Points within ref triangle
-    xi_eval = xi_grid[mask]
-    eta_eval = eta_grid[mask]
-    num_eval_points = len(xi_eval)
-    if num_eval_points == 0: return # Nothing to plot
-
-    # 2. Map evaluation points to physical coords (x, t)
-    v0, v1, v2 = element_verts[0,:], element_verts[1,:], element_verts[2,:]
-    x_eval = v0[0]*(1-xi_eval-eta_eval) + v1[0]*xi_eval + v2[0]*eta_eval
-    t_eval = v0[1]*(1-xi_eval-eta_eval) + v1[1]*xi_eval + v2[1]*eta_eval
-
-    # 3. Evaluate solution u_h at physical evaluation points
-    u_eval = np.zeros(num_eval_points)
-    for i in range(num_eval_points):
-        basis_at_pt = evaluate_reference_basis(xi_eval[i], eta_eval[i], poly_order)
-        u_eval[i] = np.dot(basis_at_pt, element_coeffs)
-
-    # 4. Plot using tricontourf
-    fig, ax = plt.subplots(figsize=(8, 7))
-    try:
-        # Triangulation based on reference points can be more robust
-        tri_ref = tri.Triangulation(xi_eval, eta_eval)
-        tri_phys = tri.Triangulation(x_eval, t_eval, triangles=tri_ref.triangles)
-
-        contour_plot = ax.tricontourf(tri_phys, u_eval, cmap='viridis', levels=14)
-        fig.colorbar(contour_plot, label=f'$u_h$ (P{poly_order})')
-        ax.triplot(tri_phys, 'k-', lw=0.3, alpha=0.5) # Show triangulation lightly
-    except Exception as e:
-        print(f"Plotting warning: {e}. Using scatter plot fallback.")
-        scatter_plot = ax.scatter(x_eval, t_eval, c=u_eval, cmap='viridis', s=15, vmin=np.min(u_eval), vmax=np.max(u_eval))
-        fig.colorbar(scatter_plot, label=f'$u_h$ (P{poly_order})')
-
-    # Outline the element
-    ax.plot([v0[0], v1[0], v2[0], v0[0]], [v0[1], v1[1], v2[1], v0[1]], 'r-', lw=1.5)
-
-    ax.set_xlabel('$x$ (Space)')
-    ax.set_ylabel('$t$ (Time)')
-    ax.set_title(f'STDG Solution in Element (Random Coefficients)')
-    ax.set_aspect('equal', adjustable='box')
-    ax.grid(alpha=0.3)
-    return fig, ax
+    # pbar_anim.close()
+    return
 
 
-# --- Example Usage ---
+# --- Matplotlib Global Settings ---
+# Moved potentially missing definitions here for safety if plot_function is called directly
+ftSz1, ftSz2, ftSz3 = 20, 17, 14
+plt.rcParams["text.usetex"] = False  # Set globally - Make sure LaTeX is installed or set to False
+plt.rcParams['font.family'] = 'serif'
+
+
+# ==============================================================
+# --- Main Execution Block ---
+# ==============================================================
 if __name__ == "__main__":
-    print(f"STDG Setup: Polynomial Order P={P_ORDER}, DOFs/Element N_P={N_DOF_PER_ELEMENT}")
 
-    # --- Dummy Mesh Definition (CRITICAL: Replace with actual mesh generator output) ---
-    #     v2 (0, 0.5)
-    #     | \
-    #     |   \ Elem 0
-    #     |     \
-    # v0 (0, 0)----v1 (0.5, 0)
-    # Element 0: Vertices [0, 1, 2] -> Map ref (0,0)->v0, (1,0)->v1, (0,1)->v2
-    # Local Edges (Counter-Clockwise): 0:v0-v1, 1:v1-v2, 2:v2-v0
-    dummy_vertices_data = np.array([
-        [0.0, 0.0], [0.5, 0.0], [0.0, 0.5]
-    ])
-    dummy_elements_data = np.array([
-        [0, 1, 2] # Single element
-    ])
-    # Define edges: key=(sorted_vtx_idx_tuple), normal outward from first listed element
-    dummy_edge_map_data = {
-        (0, 1): { # Edge 0 (Local 0)
-            'vertices': (0, 1), 'length': 0.5, 'normal': np.array([0.0, -1.0]),
-            'elements': (0, -1), 'local_indices': (0, None)
-        },
-        (1, 2): { # Edge 1 (Local 1)
-            'vertices': (1, 2), 'length': np.sqrt(0.5**2 + 0.5**2), 'normal': np.array([0.5, 0.5]) / np.sqrt(0.5), # Normal: (t2-t1, x1-x2)
-            'elements': (0, -1), 'local_indices': (1, None)
-        },
-        (0, 2): { # Edge 2 (Local 2)
-            'vertices': (2, 0), 'length': 0.5, 'normal': np.array([-1.0, 0.0]), # Normal: (t0-t2, x2-x0)
-            'elements': (0, -1), 'local_indices': (2, None) # Corrected key order
-        }
-    }
-    # --- End Dummy Mesh ---
+    # --- Configuration for Baseline Simulation ---
+    L_ = 1.0         # Domain Length [0, L]
+    n_ = 20          # Number of spatial elements (Matches paper Sec 8.1)
+    p_ = 3           # Polynomial degree (Matches paper Sec 8.1)
+    c_ = 1.0         # Advection speed (a=1 in paper Sec 8.1)
 
+    # --- Time Stepping Parameters ---
+    # Using the CFL constraint from the provided table and formula
+    # For p=3, the 4th value (index 3) in the table is 1.3926 (Matches paper Sec 8.1)
+    # Column index 3 corresponds to the 4th column value for p=3
     try:
-        test_mesh = MeshData(dummy_vertices_data, dummy_elements_data, dummy_edge_map_data)
-    except Exception as e:
-        print(f"Fatal Error creating MeshData: {e}")
+        CFL_limit = table[p_][3] # Should be 1.3926 for p=3 (using table value from original code)
+                                # Check if this is the correct column for RK44 stability
+    except IndexError:
+        print(f"Error: p={p_} or column index 3 is out of bounds for the provided table.")
         exit()
 
-    ADVECTION_SPEED = 1.0
+    safety_factor = 0.5     # Safety factor for stability
+    dt_ = safety_factor * CFL_limit / abs(c_) * (L_ / n_) # Time step calculation (use abs(c))
 
-    # --- Test Assembly for Element 0 ---
-    test_element_index = 0
-    try:
-        test_element_verts = test_mesh.get_vertices_for_element(test_element_index)
-        # Create random coefficients for testing
-        test_element_coeffs = np.random.rand(N_DOF_PER_ELEMENT)
-        # Dummy global U (only one element here)
-        U_global_dummy = test_element_coeffs.reshape(1, -1)
-    except Exception as e:
-         print(f"Fatal Error getting data for element {test_element_index}: {e}")
-         exit()
+    # --- Final time T ---
+    # Run for one full period so the exact solution returns to the initial state
+    T_final = L_ / abs(c_) # T = 1.0 / 1.0 = 1.0
+    # Ensure m_ is at least 1
+    m_ = max(1, int(np.ceil(T_final / dt_))) # Number of time steps needed
+    # Optional: Adjust dt slightly to exactly hit T_final
+    dt_adjusted = T_final / m_
+    print("(Using adjusted dt to exactly reach T_final)")
 
-    print(f"\n--- Assembling for Element {test_element_index} ---")
-    print(f"Vertices:\n{test_element_verts}")
+    # --- Print Configuration ---
+    print(f"Configuration:")
+    print(f"  Domain L = {L_}, Elements n = {n_}, Polynomial Degree p = {p_}")
+    print(f"  Advection Speed c = {c_}")
+    print(f"Time Discretization:")
+    print(f"  CFL Limit (p={p_}, col_idx=3) = {CFL_limit}")
+    print(f"  Safety Factor = {safety_factor}")
+    print(f"  Initial dt estimate = {dt_:.6f}")
+    print(f"  Target T_final = {T_final:.3f}")
+    print(f"  Number of steps m = {m_}")
+    print(f"  Adjusted dt = {dt_adjusted:.6f}")
 
-    matrix_M = compute_element_matrix_M(test_element_verts, ADVECTION_SPEED, poly_order=P_ORDER)
-    if matrix_M is not None:
-        print(f"\nLocal Matrix M^K (Shape: {matrix_M.shape})")
-        print(f"Top-Left 3x3:\n{matrix_M[:3,:3]}")
+    # --- Initial Condition ---
+    # Square wave u(x,0) = square(2*pi*x/L, 1/3) (from paper Sec 8.1)
+    # Need lambda function f(x, L) format for compute_coefficients
+    f_initial = lambda x, L: square(2 * np.pi * x / L, 1./3.)
 
-    rhs_R = compute_element_rhs_R(test_element_index, test_element_verts, test_element_coeffs,
-                                 test_mesh, U_global_dummy, ADVECTION_SPEED, poly_order=P_ORDER)
-    if rhs_R is not None:
-        print(f"\nLocal RHS R^K (Shape: {rhs_R.shape})")
-        print(f"First 3 elements:\n{rhs_R[:3]}")
+    # --- DG Parameters ---
+    rk_method = 'RK44'       # As specified in paper Sec 8.1
+    upwind_param = 1.0       # Use 1.0 for full upwind with c_>0 ('a' in build_matrix)
 
-    # --- Plotting Call ---
-    if rhs_R is not None:
-        print("\n--- Generating Plot (using random coefficients) ---")
-        try:
-            fig, ax = plot_st_element_solution(test_element_verts, test_element_coeffs, poly_order=P_ORDER)
-            plt.show()
-        except Exception as e:
-            print(f"Plotting failed: {e}")
+    # print(f"Running simulation with {rk_method}...") # Moved inside advection1d
 
-    print("\n--- NOTE: This script only demonstrates local assembly. ---")
-    print("--- Full solver requires global assembly, ICs, BCs, and linear solve. ---")
-    print("--- Basis functions and quadrature are placeholders and need replacement! ---")
+    # --- Run Simulation ---
+    # Call the main function, disable animation/saving for baseline validation
+    u_coeffs_time_history = advection1d(L_, n_, dt_adjusted, m_, p_, c_,
+                                       f=f_initial, a=upwind_param,
+                                       rktype=rk_method, anim=False,
+                                       save=False, tend=T_final)
+
+    # --- Post-processing ---
+    # print("Simulation finished.") # Moved inside advection1d
+
+    # Extract coefficients at the final time step (index m)
+    # Shape is (p+1, n, m+1), so final index is m
+    # Correct indentation here:
+    final_coeffs_per_element = u_coeffs_time_history[:, :, m_] # Shape (p+1, n)
+
+    # --- Plotting (Action 1.3) ---
+    print("Post-processing: Plotting final solution...")
+
+    # Helper function to evaluate the DG solution at arbitrary points x
+    def evaluate_dg_solution(x_eval, coeffs_element_wise, L, n, p):
+        """ Evaluates the DG solution given by coefficients on each element. """
+        dx = L / n
+        u_h_eval = np.zeros_like(x_eval, dtype=float)
+        psi_basis = [legendre(i) for i in range(p + 1)]
+
+        for i, x_val in enumerate(x_eval):
+            # Handle edge cases and find element index
+            if x_val >= L: # Include L in the last element
+                element_idx = n - 1
+                xi_val = 1.0
+            elif x_val <= 0: # Include 0 in the first element
+                element_idx = 0
+                xi_val = -1.0
+            else:
+                element_idx = int(np.floor(x_val / dx))
+                element_idx = min(element_idx, n - 1) # Ensure index is within bounds [0, n-1]
+                x_left = element_idx * dx
+                # Map x_val to local coordinate xi in [-1, 1]
+                xi_val = 2 * (x_val - x_left) / dx - 1.0
+                # Clamp xi_val to handle potential floating point issues at boundaries
+                xi_val = np.clip(xi_val, -1.0, 1.0)
+
+
+            # Evaluate basis functions at xi_val
+            psi_at_xi = np.array([psi(xi_val) for psi in psi_basis])
+
+            # Compute solution as dot product of coefficients and basis values
+            # coeffs_element_wise has shape (p+1, n)
+            u_h_eval[i] = np.dot(psi_at_xi, coeffs_element_wise[:, element_idx])
+
+        return u_h_eval
+
+    # Define the exact solution function
+    def u_exact(x, t, L, c, initial_func):
+        """ Calculates the exact solution u(x,t) = u0(x-ct) with periodic wrapping. """
+        # Calculate the position where the value originated at t=0, handling periodicity
+        x_origin = np.mod(x - c * t, L) # Modulo L ensures periodicity
+        return initial_func(x_origin, L) # Pass L if needed by f_initial
+
+    # Generate points for plotting
+    n_plot_points_per_element = 50 # Increase for smoother curves
+    x_plot = np.linspace(0, L_, n_ * n_plot_points_per_element + 1)
+
+    # Evaluate numerical and exact solutions at plot points
+    u_h_final = evaluate_dg_solution(x_plot, final_coeffs_per_element, L_, n_, p_)
+    u_ex_final = u_exact(x_plot, T_final, L_, c_, f_initial)
+
+    # Plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(x_plot, u_ex_final, 'r-', linewidth=3, alpha=0.7, label=f'Exact Solution at T={T_final:.2f}')
+    plt.plot(x_plot, u_h_final, 'b-', linewidth=1.5, label=f'DG Solution (p={p_}, n={n_}, RK44)') # Solid line for DG
+    # Add element boundaries for clarity
+    for k_elem in range(n_ + 1):
+         plt.axvline(k_elem * L_ / n_, color='gray', linestyle=':', linewidth=0.5)
+    plt.xlabel("x")
+    plt.ylabel("u(x, T)")
+    plt.title(f"DG Solution vs Exact Solution at T={T_final:.2f} (Baseline)")
+    plt.legend()
+    plt.grid(True, linestyle=':')
+    # Adjust ylim based on initial condition range (-1 to 1 for square wave)
+    plt.ylim(-1.5, 1.5)
+    plt.show()
+
+
+    # --- L2 Error Calculation (Action 1.4) ---
+    print("Post-processing: Calculating L2 error...")
+    # Number of quadrature points (should be high enough for degree 2p accuracy)
+    num_quad_points = p_ + 2 # Degree 2p+1 -> exact for poly degree 2*(p+2)-1 = 2p+3. p+1 -> exact for 2p+1. Let's use p+2.
+    if num_quad_points < 1: num_quad_points = 1 # Ensure at least 1 point
+    xi_quad, w_quad = roots_legendre(num_quad_points) # Points xi_q and weights w_q in [-1, 1]
+
+    l2_error_sq_sum = 0.0
+    dx = L_ / n_
+    jacobian = dx / 2.0 # Jacobian for mapping [-1, 1] to element dx/dxi
+
+    # Pre-calculate Legendre basis at quadrature points for efficiency
+    psi_basis = [legendre(i) for i in range(p_ + 1)]
+    psi_at_quad = np.array([[psi(xi) for psi in psi_basis] for xi in xi_quad]) # Shape (num_quad_points, p+1)
+
+    for k in range(n_): # Loop over elements
+        x_left = k * dx
+        # Map quad points xi_q from [-1, 1] to physical coordinates x_q in element k
+        x_quad_k = x_left + (xi_quad + 1) * jacobian
+
+        # Evaluate numerical solution u_h at physical quadrature points x_q in element k
+        # coeffs for element k has shape (p+1,)
+        coeffs_k = final_coeffs_per_element[:, k]
+        # u_h(x_q) = sum_i coeffs_k[i] * P_i(xi_q) = psi_at_quad @ coeffs_k
+        u_h_at_quad_k = np.dot(psi_at_quad, coeffs_k) # Shape (num_quad_points,)
+
+        # Evaluate exact solution u_exact at physical quadrature points x_q in element k
+        u_ex_at_quad_k = u_exact(x_quad_k, T_final, L_, c_, f_initial)
+
+        # Calculate squared error at quadrature points: (u_h(x_q) - u_ex(x_q))^2
+        error_sq_at_quad = (u_h_at_quad_k - u_ex_at_quad_k)**2
+
+        # Add contribution to integral: ∫_elem (err^2) dx = ∫_{-1}^1 (err(x(xi))^2) * jacobian * dxi
+        # Approximated by sum_q [ w_q * err(x(xi_q))^2 * jacobian ]
+        l2_error_sq_sum += np.sum(w_quad * error_sq_at_quad) * jacobian
+
+    # Final L2 error is the square root of the total sum
+    l2_error = np.sqrt(l2_error_sq_sum)
+    print(f"L2 Error ||u_h - u_exact|| at T={T_final:.2f} = {l2_error:.6e}")
+
+# ==============================================================
+# End of Script
+# ==============================================================
