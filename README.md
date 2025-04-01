@@ -11,6 +11,7 @@ Flexible handling of complex geometries
 Efficient parallelization
 
 Installation & Usage
+
 1.Clone the repository:
 
 git clone https://github.com/MohammadNawawra2003/Discontinuous-Galerkin-Method-.git
