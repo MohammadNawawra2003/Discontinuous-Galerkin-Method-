@@ -9,8 +9,7 @@ High-order accuracy for solving differential equations
 
 Flexible handling of complex geometries
 
-Efficient parallelization
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
 Installation & Usage
 --------------------
 1. Clone the repository:
