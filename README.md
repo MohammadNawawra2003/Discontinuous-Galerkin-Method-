@@ -2,7 +2,8 @@
 Discontinuous Galerkin Method
 --------------------
 This repository provides an implementation of the Discontinuous Galerkin (DG) method for solving differential equations with high-order accuracy and flexibility. The DG method is suitable for problems with complex geometries and those requiring local refinement.
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------Features
+
+Features
 --------------------
 High-order accuracy for solving differential equations
 
