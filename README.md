@@ -17,6 +17,7 @@ Installation & Usage
 git clone https://github.com/MohammadNawawra2003/Discontinuous-Galerkin-Method-.git
 
 2.Navigate to the project directory and follow the setup instructions provided in the docs/ directory.
+
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 Documentation & References
 --------------------
