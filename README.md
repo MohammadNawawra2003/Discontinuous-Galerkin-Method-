@@ -12,11 +12,11 @@ Flexible handling of complex geometries
 
 Installation & Usage
 --------------------
-1. Clone the repository:
+1.Clone the repository:
 
 git clone https://github.com/MohammadNawawra2003/Discontinuous-Galerkin-Method-.git
 
-2. Navigate to the project directory and follow the setup instructions provided in the docs/ directory.
+2.Navigate to the project directory and follow the setup instructions provided in the docs/ directory.
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 Documentation & References
 --------------------
