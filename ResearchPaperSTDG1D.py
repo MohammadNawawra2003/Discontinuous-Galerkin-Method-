@@ -358,7 +358,9 @@ def plot_function(u, L, n, dt, m, p, c, f, save=False, tend=0.):
             print(f"Error saving animation: {e}")
             print("Ensure FFmpeg is installed and in your system's PATH.")
     else:
+        plt.xlim(0,1)
         plt.show()
+        
 
     # pbar_anim.close()
     return
@@ -367,7 +369,7 @@ def plot_function(u, L, n, dt, m, p, c, f, save=False, tend=0.):
 # --- Matplotlib Global Settings ---
 # Moved potentially missing definitions here for safety if plot_function is called directly
 ftSz1, ftSz2, ftSz3 = 20, 17, 14
-plt.rcParams["text.usetex"] = False  # Set globally - Make sure LaTeX is installed or set to False
+plt.rcParams["text.usetex"] = False  
 plt.rcParams['font.family'] = 'serif'
 
 
@@ -432,7 +434,7 @@ if __name__ == "__main__":
     # Call the main function, disable animation/saving for baseline validation
     u_coeffs_time_history = advection1d(L_, n_, dt_adjusted, m_, p_, c_,
                                        f=f_initial, a=upwind_param,
-                                       rktype=rk_method, anim=False,
+                                       rktype=rk_method, anim=True,
                                        save=False, tend=T_final)
 
     # --- Post-processing ---
