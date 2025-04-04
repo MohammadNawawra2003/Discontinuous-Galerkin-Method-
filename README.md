@@ -1,5 +1,5 @@
 ![DG Lagrange Pl Solution vs Exact Solution at T=I OO (Final) Lagrange](https://github.com/user-attachments/assets/57a59556-f091-47bf-8de6-dc8c0c602277)
-![DG Solution vs Exact Solution at T=I OO (Baseline) Legendre](https://github.com/user-attachments/assets/61f40cc2-cd8c-45a7-a86a-d2a68d7d12d1)
+![DG Legendre Pl Solution vs Exact Solution at T=I OO (Final)](https://github.com/user-attachments/assets/b66ac55e-7133-4435-9b61-0d8921d02638)
 Discontinuous Galerkin Method
 --------------------
 This repository provides an implementation of the Discontinuous Galerkin (DG) method for solving differential equations with high-order accuracy and flexibility. The DG method is suitable for problems with complex geometries and those requiring local refinement.
