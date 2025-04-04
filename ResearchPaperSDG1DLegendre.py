@@ -381,15 +381,13 @@ if __name__ == "__main__":
     # --- Configuration for Baseline Simulation ---
     L_ = 1.0         # Domain Length [0, L]
     n_ = 20          # Number of spatial elements (Matches paper Sec 8.1)
-    p_ = 3           # Polynomial degree (Matches paper Sec 8.1)
+    p_ = 1          # Polynomial degree (Matches paper Sec 8.1)
     c_ = 1.0         # Advection speed (a=1 in paper Sec 8.1)
 
     # --- Time Stepping Parameters ---
     # Using the CFL constraint from the provided table and formula
-    # For p=3, the 4th value (index 3) in the table is 1.3926 (Matches paper Sec 8.1)
-    # Column index 3 corresponds to the 4th column value for p=3
     try:
-        CFL_limit = table[p_][3] # Should be 1.3926 for p=3 (using table value from original code)
+        CFL_limit = table[p_][1] 
                                 # Check if this is the correct column for RK44 stability
     except IndexError:
         print(f"Error: p={p_} or column index 3 is out of bounds for the provided table.")
@@ -506,7 +504,7 @@ if __name__ == "__main__":
          plt.axvline(k_elem * L_ / n_, color='gray', linestyle=':', linewidth=0.5)
     plt.xlabel("x")
     plt.ylabel("u(x, T)")
-    plt.title(f"DG Solution vs Exact Solution at T={T_final:.2f} (Baseline)")
+    plt.title(f"DG Legendre P1 Solution vs Exact Solution at T={T_final:.2f} (Final)")
     plt.legend()
     plt.grid(True, linestyle=':')
     # Adjust ylim based on initial condition range (-1 to 1 for square wave)
