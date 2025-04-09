@@ -3,7 +3,7 @@ Lagrange:
 ![DG Lagrange Pl Solution vs Exact Solution at T=I OO (Final) Lagrange](https://github.com/user-attachments/assets/57a59556-f091-47bf-8de6-dc8c0c602277)
 ![DG Lagrange P1 Solution vs Exact Solution at T=I OO (Final)](https://github.com/user-attachments/assets/0ebd6e33-7a8a-4913-9c5b-3a4ee7c276a8)
 
-Legendre:
+  Legendre:
 ![Legendre Basis Functions (p=l) on Reference Element  -1, 1](https://github.com/user-attachments/assets/cd67d59e-37a8-4673-94bf-20a8ccd00a56)
 ![DG Legendre Pl Solution vs Exact Solution at T=I OO (Final)](https://github.com/user-attachments/assets/b66ac55e-7133-4435-9b61-0d8921d02638)
 
