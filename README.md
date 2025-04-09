@@ -1,4 +1,5 @@
 Lagrange:
+
 ![Pl Lagrange Shape Functions on Reference Element  -1, 1](https://github.com/user-attachments/assets/7d041539-98c2-43a8-8cd7-84dce61d6466)
 ![DG Lagrange Pl Solution vs Exact Solution at T=I OO (Final) Lagrange](https://github.com/user-attachments/assets/57a59556-f091-47bf-8de6-dc8c0c602277)
 ![DG Lagrange P1 Solution vs Exact Solution at T=I OO (Final)](https://github.com/user-attachments/assets/0ebd6e33-7a8a-4913-9c5b-3a4ee7c276a8)
