@@ -12,16 +12,6 @@ DG P1 Lagrange Convergence IC sine wave:
 Comparison of DG Lagrange P1 Solutions IC sine wave:
 ![Comparison of DG Lagrange P1 Solutions IC sine wave](https://github.com/user-attachments/assets/83c99dff-bc57-4e2a-889a-199dbc388b96)
 
-DG P1 Lagrange vs Exact IC square wave:
-![DG P1 Lagrange vs Exact IC square wave](https://github.com/user-attachments/assets/69399af9-6fb2-4156-9ca3-9097500bc53b)
-
-Comparison of DG Lagrange P1 Solutions IC square wave:
-![Comparison of DG Lagrange P1 Solutions IC square wave](https://github.com/user-attachments/assets/71c44ebf-539f-4b09-8795-f52d2cbcf4cc)
-
-DG P1 Lagrange Convergence IC square wave:
-![DG P1 Lagrange Convergence IC square wave](https://github.com/user-attachments/assets/258663f6-bc37-46ad-9107-9dfe600df38a)
-
-
 
 Error comparison for different n:
   n    |    h       |   L2 Error   | Approx. Rate
@@ -36,6 +26,27 @@ Error comparison for different n:
 Average Observed Rate (where calculable): 2.123
 (Expected rate for P1 elements is ~2.0 for smooth solutions)
 
+
+DG P1 Lagrange vs Exact IC square wave:
+![DG P1 Lagrange vs Exact IC square wave](https://github.com/user-attachments/assets/69399af9-6fb2-4156-9ca3-9097500bc53b)
+
+Comparison of DG Lagrange P1 Solutions IC square wave:
+![Comparison of DG Lagrange P1 Solutions IC square wave](https://github.com/user-attachments/assets/71c44ebf-539f-4b09-8795-f52d2cbcf4cc)
+
+DG P1 Lagrange Convergence IC square wave:
+![DG P1 Lagrange Convergence IC square wave](https://github.com/user-attachments/assets/258663f6-bc37-46ad-9107-9dfe600df38a)
+
+--- Convergence Study Results ---
+  n    |    h       |   L2 Error   | Approx. Rate
+-------|------------|--------------|--------------
+     5 | 0.200000 | 5.674372e-01 |     -
+    10 | 0.100000 | 4.820948e-01 |   0.235
+    20 | 0.050000 | 3.503165e-01 |   0.461
+    40 | 0.025000 | 2.596954e-01 |   0.432
+    80 | 0.012500 | 1.944811e-01 |   0.417
+---------------------------------
+Average Observed Rate (where calculable): 0.390
+(Expected rate for P1 elements is ~2.0 for smooth solutions)
 
 
 
