@@ -12,6 +12,17 @@ DG P1 Lagrange Convergence IC sine wave:
 Comparison of DG Lagrange P1 Solutions IC sine wave:
 ![Comparison of DG Lagrange P1 Solutions IC sine wave](https://github.com/user-attachments/assets/83c99dff-bc57-4e2a-889a-199dbc388b96)
 
+DG P1 Lagrange vs Exact IC square wave:
+![DG P1 Lagrange vs Exact IC square wave](https://github.com/user-attachments/assets/69399af9-6fb2-4156-9ca3-9097500bc53b)
+
+Comparison of DG Lagrange P1 Solutions IC square wave:
+![Comparison of DG Lagrange P1 Solutions IC square wave](https://github.com/user-attachments/assets/71c44ebf-539f-4b09-8795-f52d2cbcf4cc)
+
+DG P1 Lagrange Convergence IC square wave:
+![DG P1 Lagrange Convergence IC square wave](https://github.com/user-attachments/assets/258663f6-bc37-46ad-9107-9dfe600df38a)
+
+
+
 Error comparison for different n:
   n    |    h       |   L2 Error   | Approx. Rate
 -------|------------|--------------|--------------
