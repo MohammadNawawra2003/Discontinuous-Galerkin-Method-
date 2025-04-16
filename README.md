@@ -26,6 +26,8 @@ Average Observed Rate (where calculable): 2.123
 (Expected rate for P1 elements is ~2.0 for smooth solutions)
 
 
+
+
 Legendre code results:
 
 Legendre Basis Functions p=0..1 on Ref Element [-1, 1]:
