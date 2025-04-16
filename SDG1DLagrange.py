@@ -1,6 +1,5 @@
 # dg_lagrange_p1_1d_improved_v2.py
 # Implements 1D DG for Advection using P1 Lagrange basis functions.
-# Incorporates teacher feedback and handwritten notes:
 # - Consolidated initial conditions.
 # - Optimized M_inv * R calculation using element-wise local inverse.
 # - Added convergence study (L2 error vs h).
