@@ -1,22 +1,58 @@
-Lagrange:
+Lagrange code results:
 
-![Pl Lagrange Shape Functions on Reference Element  -1, 1](https://github.com/user-attachments/assets/7d041539-98c2-43a8-8cd7-84dce61d6466)
+Pl Lagrange Shape Functions on Reference Element [-1, 1]:
+![Pl Lagrange Shape Functions on Reference Element  -1, 1](https://github.com/user-attachments/assets/1b75325c-def7-4cfd-8929-55aa7f301dc8)
 
-Square waves:
-![DG Lagrange Pl Solution vs Exact Solution at T=I OO (Final) Lagrange](https://github.com/user-attachments/assets/57a59556-f091-47bf-8de6-dc8c0c602277)
+DG P1 Lagrange vs Exact IC sine wave:
+![DG P1 Lagrange vs Exact IC sine wave](https://github.com/user-attachments/assets/ab7f9189-f012-445c-a637-1fbb7295c2ed)
 
-Sine waves:
-![DG Lagrange P1 Solution vs Exact Solution at T=I OO (Final)](https://github.com/user-attachments/assets/0ebd6e33-7a8a-4913-9c5b-3a4ee7c276a8)
+DG P1 Lagrange Convergence IC sine wave:
+![DG P1 Lagrange Convergence IC sine wave](https://github.com/user-attachments/assets/fa9f0cf2-c0ec-412b-94eb-47e8bd0f2eaf)
 
-Legendre:
+Comparison of DG Lagrange P1 Solutions IC sine wave:
+![Comparison of DG Lagrange P1 Solutions IC sine wave](https://github.com/user-attachments/assets/83c99dff-bc57-4e2a-889a-199dbc388b96)
 
-![Legendre Basis Functions (p=l) on Reference Element  -1, 1](https://github.com/user-attachments/assets/cd67d59e-37a8-4673-94bf-20a8ccd00a56)
+Error comparison for different n:
+  n    |    h       |   L2 Error   | Approx. Rate
+-------|------------|--------------|--------------
+     5 | 0.200000 | 1.814928e-01 |     -
+    10 | 0.100000 | 4.002318e-02 |   2.181
+    20 | 0.050000 | 8.714361e-03 |   2.199
+    40 | 0.025000 | 1.992882e-03 |   2.129
+    80 | 0.012500 | 4.742414e-04 |   2.071
+   160 | 0.006250 | 1.155428e-04 |   2.037
+---------------------------------
 
-Square waves:
-![DG Legendre Pl Solution vs Exact Solution at T=I OO (Final)](https://github.com/user-attachments/assets/b66ac55e-7133-4435-9b61-0d8921d02638)
+Average Observed Rate (where calculable): 2.123
+(Expected rate for P1 elements is ~2.0 for smooth solutions)
 
-Sine waves:
-![DG Legendre P1 Solution vs Exact Solution at T=I OO (Final)](https://github.com/user-attachments/assets/0f25f598-c313-49dd-aab6-962b2b9077b1)
+
+Legendre code results:
+
+Legendre Basis Functions p=0..1 on Ref Element [-1, 1]:
+![Legendre Basis Functions p=0 1 on Ref Element  -1, 1](https://github.com/user-attachments/assets/eac464ce-5b22-43f5-bf19-c819f7a3b985)
+
+DG P1 Legendre vs Exact IC sine wave:
+![DG P1 Legendre vs Exact IC sine wave](https://github.com/user-attachments/assets/651de589-c2a6-44f5-be85-988433b37aad)
+
+DG Legendre P1 Convergence IC ic_sine wave:
+![DG Legendre P1 Convergence IC ic_sine wave](https://github.com/user-attachments/assets/7cfb464f-9270-40be-97d1-19cdf420df22)
+
+Comparison of DG Legendre P1 Solutions for Different n:
+![Comparison of DG Legendre P1 Solutions for Different n](https://github.com/user-attachments/assets/b7c40945-b23d-41ee-8159-8fdbbe3363d9)
+
+Error comparison for different n:
+
+  n    |    h       |   L2 Error   | Approx. Rate
+-------|------------|--------------|--------------
+     5 | 0.200000 | 1.152020e-01 |     -
+    10 | 0.100000 | 2.170336e-02 |   2.408
+    20 | 0.050000 | 4.599619e-03 |   2.238
+    40 | 0.025000 | 1.085200e-03 |   2.084
+    80 | 0.012500 | 2.669426e-04 |   2.023
+---------------------------------
+Average Observed Rate: 2.188
+(Expected rate for P1 is ~2.0 for smooth solutions)
 
 
 Discontinuous Galerkin Method
