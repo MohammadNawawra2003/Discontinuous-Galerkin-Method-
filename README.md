@@ -77,6 +77,27 @@ Error comparison for different n:
 Average Observed Rate: 2.188
 (Expected rate for P1 is ~2.0 for smooth solutions)
 
+DG P1 Legendre vs Exact IC square wave:
+![DG P1 Legendre vs Exact IC square wave](https://github.com/user-attachments/assets/ae081811-2333-4466-ab51-b7beb475b26a)
+
+
+DG Legendre P1 Convergence IC ic square wave
+![DG Legendre P1 Convergence IC ic square wave](https://github.com/user-attachments/assets/fed61e24-de9d-40a4-961f-f612446a3fa2)
+
+
+Comparison of DG Legendre P1 Solutions for Different n:
+![Comparison of DG Legendre P1 Solutions for Different n](https://github.com/user-attachments/assets/a75ed45f-0beb-45c4-bb41-4925a8620cc8)
+
+  n    |    h       |   L2 Error   | Approx. Rate
+-------|------------|--------------|--------------
+     5 | 0.200000 | 4.538447e-01 |     -
+    10 | 0.100000 | 3.940828e-01 |   0.204
+    20 | 0.050000 | 2.999868e-01 |   0.394
+    40 | 0.025000 | 2.320481e-01 |   0.370
+    80 | 0.012500 | 1.793366e-01 |   0.372
+---------------------------------
+Average Observed Rate: 0.335
+(Expected rate for P1 is ~2.0 for smooth solutions)
 
 Discontinuous Galerkin Method
 --------------------
