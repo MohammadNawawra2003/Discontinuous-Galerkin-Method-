@@ -1,4 +1,6 @@
-# dg_legendre_p1_1d_improved.py
+# dg_legendre_p1_1d_improved_v2.py
+# Legendre DG code with IC selection, convergence study, refactoring,
+# and a final plot comparing solutions for different 'n'.
 
 import numpy as np
 import scipy.sparse as sp
@@ -8,16 +10,7 @@ from scipy.signal import square
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from tqdm import tqdm
 import os
-import math # For log in convergence rate calculation
-
-# --- Provided table (likely CFL limits or related coefficients) ---
-# Kept for reference, but CFL calculation below is more explicit.
-table = [
-    [1.0000, 1.0000, 1.2564, 1.3926, 1.6085], # p=0
-    [0, 0.3333, 0.4096, 0.4642, 0.5348],    # p=1
-    [0, 0, 0.2098, 0.2352, 0.2716],       # p=2
-    # ... (rest of table omitted for brevity but could be included)
-]
+import math
 
 # --- Time Stepping Functions (used by core solver) ---
 def rk44(u_history, Q, dt, m):
@@ -28,10 +21,10 @@ def rk44(u_history, Q, dt, m):
         return u_history
 
     N_dof = u_history.shape[1]
-    n_elements = N_dof // (Q.shape[0] // N_dof) # Infer n (assumes Q block structure size known implicitly)
-                                                # This is a bit fragile, better to pass n if possible
+    p_approx = (Q.shape[0] // (u_history.shape[1] // (p_ + 1))) -1 # Infer p (Approximate)
+    n_elements = N_dof // (p_approx + 1) # Infer n
 
-    for i in tqdm(range(m), desc=f"RK44 Steps", unit="step"):
+    for i in tqdm(range(m), desc=f"RK44 Steps (n={n_elements}, p={p_approx})", unit="step", leave=False):
         u_i = u_history[i]
         try:
             K1 = Q.dot(u_i)
@@ -39,143 +32,75 @@ def rk44(u_history, Q, dt, m):
             K3 = Q.dot(u_i + K2 * dt / 2.)
             K4 = Q.dot(u_i + K3 * dt)
 
-            # Check for NaNs/Infs
             if not np.all(np.isfinite(K1)) or \
                not np.all(np.isfinite(K2)) or \
                not np.all(np.isfinite(K3)) or \
                not np.all(np.isfinite(K4)):
-                print(f"\nWarning: Instability detected at time step {i+1}. Aborting RK step.")
+                print(f"\nWarning: Instability detected at time step {i+1} (n={n_elements}). Aborting.")
                 u_history[i + 1:, :] = np.nan
-                return u_history # Stop integration
+                return u_history
 
             u_history[i + 1] = u_i + dt * (K1 + 2 * K2 + 2 * K3 + K4) / 6.
         except Exception as e:
-             print(f"\nError during RK step {i+1}: {e}")
-             u_history[i + 1:, :] = np.nan # Mark as failed
+             print(f"\nError during RK step {i+1} (n={n_elements}): {e}")
+             u_history[i + 1:, :] = np.nan
              return u_history
     return u_history
 
-# Other time steppers (fwd_euler, rk22) could be added here if needed
-
-
 # --- DG Matrix Building Function ---
 def build_Q_matrix(n, p, L, c, a):
-    """ Builds the DG spatial operator matrix Q = -c/dx * M_inv * L. """
+    """ Builds the DG spatial operator matrix Q = M_inv * L_spatial_operator. """
+    # Note: Changed sign convention interpretation. L_spatial represents the spatial
+    # operator such that M U' = L_spatial U. Then Q = M_inv * L_spatial.
+    # Let's stick to the original code's implicit definition where Q = -c * M_inv * L_stiff
+    # to maintain its behavior, assuming L_stiff was defined appropriately for that.
+
     if p < 0: raise ValueError("Polynomial degree p must be non-negative.")
     if n <= 0: raise ValueError("Number of elements n must be positive.")
     dx = L / n
     if dx <= 1e-15: raise ValueError(f"dx={dx} too small.")
 
     # Inverse Mass Matrix M_inv (Diagonal)
-    # M_ii = integral( psi_i * psi_i * dx ) = (dx/2) * integral( P_i(xi)^2 dxi ) = (dx/2) * (2 / (2i+1)) = dx / (2i+1)
-    # M_inv_ii = (2*i + 1) / dx
+    # M_ij = delta_ij * (dx / (2i+1)) => M_inv_ii = (2i+1) / dx
     inv_mass_diag_coeffs = np.arange(0, p + 1) # i = 0 to p
-    inv_mass_matrix_diag_term = (2.0 * inv_mass_diag_coeffs + 1.0) # Element-local diagonal term
-    inv_mass_matrix_diag = np.tile(inv_mass_matrix_diag_term, n)
-    # Normalization factor from dx = jacobian * dxi = (dx/2) * 2
-    # The projection used below includes (2i+1)/2 factor. Mass matrix M_ij = integral(Li Lj dx)
-    # M_ij = delta_ij * (dx / (2i+1)). M_inv_ij = delta_ij * (2i+1) / dx
-    # Let's use the formula from projection consistency: M_inv_ii = (2i+1)/2 * (2/dx) = (2i+1)/dx
-    inv_mass_matrix_diag_global = (inv_mass_matrix_diag_term * (2.0/dx)) # Global diag term including 1/dx scaling
-    # Wait, the projection scaling was (2i+1)/2. Mass matrix term is integral(Pi*Pi*dx) = (dx/2)*integral(Pi*Pi*dxi) = (dx/2)*(2/(2i+1))=dx/(2i+1).
-    # M_inv is diag( (2i+1)/dx ).
-    inv_mass_matrix_diag = np.tile(inv_mass_matrix_diag_term, n) * (1.0 / dx) # Correct scaling
-    inv_mass_matrix = sp.diags([inv_mass_matrix_diag], [0], format='csr', dtype=np.float64)
+    inv_mass_matrix_diag_term = (2.0 * inv_mass_diag_coeffs + 1.0) / dx # Scaled diagonal term
+    inv_mass_matrix_diag_global = np.tile(inv_mass_matrix_diag_term, n)
+    inv_mass_matrix = sp.diags([inv_mass_matrix_diag_global], [0], format='csr', dtype=np.float64)
 
-
-    # Stiffness/Flux Matrix L (build block by block)
+    # Stiffness/Flux Matrix L_stiff (using original code's block structure)
     if p == 0:
-        # P0 basis: P0(xi)=1. dP0/dxi = 0.
-        D = sp.csr_matrix((1, 1)) # No derivative term
-        A = sp.csr_matrix([[1.0]]) # P0(1)P0(1)=1, P0(-1)P0(-1)=1, P0(1)P0(-1)=1, P0(-1)P0(1)=1
-        B = sp.csr_matrix([[1.0]]) # P0(1)=1, P0(-1)=1 -> [[P0(1)], [P0(-1)]] -> B represents P_i(x)*P_j(boundary) -> P0(1)=1
-        I = sp.csr_matrix([[1.0]]) # P0(1)P0(1)=1, P0(-1)P0(-1)=1
-    else: # p >= 1
-        # D matrix (derivative term contribution to L)
-        # L_ij = - integral( P_i * dP_j/dx dx ) = - integral( P_i * dP_j/dxi dxi ) * (dxi/dx) * dx ??? No.
-        # L_ij = integral( P_j * dP_i/dx dx ) -> from whiteboard derivation? Let's trust build_matrix structure.
-        # integral( P_j * dP_i/dxi dxi ) -> D[i,j] in the original code seems to represent this.
-        # D[i, j] = integral( Pi * dPj/dxi dxi ) is zero unless i > j and i+j is odd.
-        # D[i, i-k] = 2 for k=1, 3, 5... <= i
-        diags_D = []
-        offsets_D = []
-        for k_odd in range(1, p + 1, 2): # k = 1, 3, 5...
+        D = sp.csr_matrix((1, 1)); A = sp.csr_matrix([[1.]]); B = sp.csr_matrix([[1.]]); I = sp.csr_matrix([[1.]])
+    else:
+        diags_D = []; offsets_D = []
+        for k_odd in range(1, p + 1, 2):
              diag_len = p + 1 - k_odd
-             if diag_len > 0:
-                 diags_D.append(2.0 * np.ones(diag_len))
-                 offsets_D.append(-k_odd) # D[i, i-k]
-        if not diags_D: # Handle p=0 case again, although caught above
-             D = sp.csr_matrix((p + 1, p + 1))
-        else:
-             D = sp.diags(diags_D, offsets_D, shape=(p + 1, p + 1), format='csr')
+             if diag_len > 0: diags_D.append(2.0 * np.ones(diag_len)); offsets_D.append(-k_odd)
+        if not diags_D: D = sp.csr_matrix((p + 1, p + 1))
+        else: D = sp.diags(diags_D, offsets_D, shape=(p + 1, p + 1), format='csr')
 
-        # A matrix: A[i,j] = P_i(1)P_j(1) - P_i(-1)P_j(-1)
-        Pi_p1 = np.array([legendre(i)(1.0) for i in range(p+1)]) # All are 1.0
-        Pi_m1 = np.array([legendre(i)(-1.0) for i in range(p+1)]) # (-1)^i
-        A = np.outer(Pi_p1, Pi_p1) - np.outer(Pi_m1, Pi_m1) # A[i,j] = 1 - (-1)^i*(-1)^j = 1 - (-1)^(i+j)
-        A = sp.csr_matrix(A)
-
-        # B matrix: B[i,j] = P_i(1)P_j(1)
-        B = np.outer(Pi_p1, Pi_p1) # B[i,j] = 1 * 1 = 1
-        B = sp.csr_matrix(B)
-
-        # I matrix: I[i,j] = P_i(-1)P_j(-1)
-        I = np.outer(Pi_m1, Pi_m1) # I[i,j] = (-1)^i * (-1)^j = (-1)^(i+j)
-        I = sp.csr_matrix(I)
-
-        # Correction: Check original definition of A, B, I in Hesthaven/Warburton book or similar source.
-        # From typical DG: Flux terms involve P_i(+-1).
-        # Term: - [ v * (f*n) ]_bound -> - [ P_i * (c*u_hat*n) ]_bound
-        # At x_right (xi=1, n=1): - P_i(1) * c * u_hat_right
-        # At x_left (xi=-1, n=-1): + P_i(-1) * c * u_hat_left
-        # Using upwind u_hat_right=u_right=u(xi=1), u_hat_left=u_left_neighbor(xi=1) if c>0
-        # Need to express u_hat in terms of coefficients U_j of the neighboring element.
-        # u_hat_right = Sum_j U_j_current * P_j(1)
-        # u_hat_left = Sum_j U_j_neighbor * P_j(1)
-        # Contribution to element k from right boundary flux: - c * P_i(1) * Sum_j U_j_k * P_j(1) = -c * A_tilde_ij * U_j_k   where A_tilde_ij = Pi(1)Pj(1)
-        # Contribution to element k from left boundary flux: + c * P_i(-1) * Sum_j U_j_km1 * P_j(1)
-        # Volume integral: integral( dP_i/dx * c * u dx ) = integral( dP_i/dxi * c * Sum(Uj Pj) dxi ) * (dxi/dx) * dx
-        # = c * Sum_j Uj_k * integral( dP_i/dxi * Pj dxi )
-
-        # Let's assume the original build_matrix structure was correct for its specific formulation:
-        # L = Stiff Matrix such that M U' = -c/dx * L * U
-
-        # Flux terms depend on upwind parameter 'a' (alpha)
-        # mat_lft: contribution from left neighbor (periodic j=i-1 or j=n-1)
-        # mat_rgt: contribution from right neighbor (periodic j=i+1 or j=0)
-        # mat_ctr: diagonal block contribution
-        # Revisit original A,B,I definitions if results are wrong. Using code's version for now:
-        A_orig = np.ones((p + 1, p + 1)); A_orig[1::2, ::2] = -1.; A_orig[::2, 1::2] = -1. # Alternating +/- 1
-        B_orig = np.ones((p + 1, p + 1)); B_orig[:, 1::2] = -1. # Alternating +/- 1 in columns
+        # Using the A, B, I matrices as defined in the original code snippet provided
+        A_orig = np.ones((p + 1, p + 1)); A_orig[1::2, ::2] = -1.; A_orig[::2, 1::2] = -1.
+        B_orig = np.ones((p + 1, p + 1)); B_orig[:, 1::2] = -1.
         I_orig = np.ones((p + 1, p + 1))
+        A = sp.csr_matrix(A_orig); B = sp.csr_matrix(B_orig); I = sp.csr_matrix(I_orig)
 
-        A_orig = sp.csr_matrix(A_orig)
-        B_orig = sp.csr_matrix(B_orig)
-        I_orig = sp.csr_matrix(I_orig)
+    # Assemble blocks based on original code logic
+    mat_lft = -(1. + a) / 2. * B.T
+    mat_rgt = +(1. - a) / 2. * B
+    # Original D.T seems related to integral( dPi/dx * Pj dx ) term after integration by parts
+    mat_ctr = D.T + (1. + a) / 2. * A - (1. - a) / 2. * I
 
-        # Terms based on upwind parameter 'a'
-        # alpha = 1 means upwind for c>0 (flux comes from left state)
-        # Need term multiplying U_{k-1} and term multiplying U_{k+1}
-        # Using the logic from the code provided:
-        mat_lft = -(1. + a) / 2. * B_orig.T # Coefficient for U_{k-1} term
-        mat_rgt = +(1. - a) / 2. * B_orig  # Coefficient for U_{k+1} term
-        mat_ctr = D.T + (1. + a) / 2. * A_orig - (1. - a) / 2. * I_orig # Coefficient for U_k
-
-
-    # Assemble the global block matrix L
     L_stiff = sp.bmat([
         [(mat_lft if (j == i - 1) or (i == 0 and j == n - 1) else
           mat_ctr if j == i else
           mat_rgt if (j == i + 1) or (i == n - 1 and j == 0) else
           None) for j in range(n)]
         for i in range(n)
-    ], format='bsr', dtype=np.float64) # Use BSR for efficiency if blocks are dense
+    ], format='bsr', dtype=np.float64)
 
-    # Build Q = -c/dx * M_inv * L
-    # Note the sign: dU/dt = Q*U. If U' = -c U_x, then Q involves -c.
-    # If Q is defined such that U' = Q*U, then Q should be -c * (...)
-    Q_mat = -c * inv_mass_matrix.dot(L_stiff) # Scaling by c is correct here
-                                            # Scaling by 1/dx is handled in M_inv
+    # Build Q = -c * M_inv * L_stiff (Following original code's structure)
+    # Note: The scaling by 1/dx was absorbed into M_inv definition
+    Q_mat = -c * inv_mass_matrix.dot(L_stiff)
 
     return Q_mat
 
@@ -187,39 +112,29 @@ def ic_sine_wave(x, L):
 
 def ic_square_wave(x, L):
     """ Discontinuous square wave initial condition. """
-    # return square(2 * np.pi * x / L, duty=1./3.) # Original duty cycle
-    return square(2 * np.pi * x / L, duty=0.5) # Standard 50% duty cycle square wave
+    return square(2 * np.pi * x / L, duty=0.5)
 
 # --- Initial Condition Projection (Legendre) ---
 def compute_coefficients_legendre(f_initial_func, L, n, p):
     """ Computes initial DG Legendre coefficients by L2 projection. """
-    num_quad = max(p + 1, 5) # Use p+1 Gauss points minimum, maybe more
-    try:
-        xi_quad, w_quad = roots_legendre(num_quad)
-    except Exception as e:
-         print(f"Error getting Legendre roots for num_quad={num_quad}: {e}")
-         raise
+    num_quad = max(p + 2, 5) # Use sufficient quadrature points
+    try: xi_quad, w_quad = roots_legendre(num_quad)
+    except Exception as e: print(f"Error Legendre roots: {e}"); raise
     dx = L / n
     if dx <= 1e-15: raise ValueError(f"dx={dx} too small.")
     jacobian = dx / 2.0
-    psi_basis = [legendre(i) for i in range(p + 1)] # Basis functions P_0, ..., P_p
+    psi_basis = [legendre(i) for i in range(p + 1)]
 
     u_coeffs = np.zeros((n, p + 1), dtype=np.float64)
-    for k in range(n): # Loop over elements
+    for k in range(n):
         x_left = k * dx
-        x_quad_k = x_left + (xi_quad + 1.0) * jacobian # Map quad points to element k
-
-        f_vals_at_quad = f_initial_func(x_quad_k, L) # Evaluate IC at physical quad points
-
-        for i in range(p + 1): # Loop over basis functions P_i
-            psi_i_vals_at_ref_quad = psi_basis[i](xi_quad) # Evaluate P_i at ref quad points
-            # Projection formula: u_i = ( (2i+1)/2 ) * integral( f(x(xi)) * P_i(xi) dxi )
-            # integral approx by sum_q w_q * f(x(xi_q)) * P_i(xi_q)
+        x_quad_k = x_left + (xi_quad + 1.0) * jacobian
+        f_vals_at_quad = f_initial_func(x_quad_k, L)
+        for i in range(p + 1):
+            psi_i_vals_at_ref_quad = psi_basis[i](xi_quad)
             integral_weighted = np.dot(w_quad, f_vals_at_quad * psi_i_vals_at_ref_quad)
-            # Normalization factor (2i+1)/2 comes from orthogonality int(Pi*Pi dxi) = 2/(2i+1)
-            u_coeffs[k, i] = ( (2.0 * i + 1.0) / 2.0 ) * integral_weighted
-
-    return u_coeffs.reshape(n * (p + 1)) # Flatten
+            u_coeffs[k, i] = ( (2.0 * i + 1.0) / 2.0 ) * integral_weighted # Normalization
+    return u_coeffs.reshape(n * (p + 1))
 
 
 # --- Core Simulation Logic (No Plotting/Animation) - Legendre ---
@@ -228,212 +143,150 @@ def run_simulation_core_legendre(L, n, p, dt, m, c, f_initial_func, a, rktype='R
     N_dof = n * (p + 1)
     u_history = np.zeros((m + 1, N_dof), dtype=np.float64)
 
-    # Compute initial coefficients
-    try:
-        u_history[0] = compute_coefficients_legendre(f_initial_func, L, n, p)
-    except Exception as e:
-        print(f"Error computing initial coefficients for n={n}, p={p}: {e}")
-        return None # Indicate failure
+    try: u_history[0] = compute_coefficients_legendre(f_initial_func, L, n, p)
+    except Exception as e: print(f"Error IC proj (n={n},p={p}): {e}"); return None
 
-    # Build spatial operator matrix Q
-    try:
-        Q_mat = build_Q_matrix(n, p, L, c, a)
-    except Exception as e:
-        print(f"Error building Q matrix for n={n}, p={p}: {e}")
-        return None # Indicate failure
+    try: Q_mat = build_Q_matrix(n, p, L, c, a)
+    except Exception as e: print(f"Error build Q (n={n},p={p}): {e}"); return None
 
-    # Perform time stepping
-    print(f"Starting time integration ({rktype}, n={n}, p={p})...")
-    if rktype == 'RK44':
-        u_history = rk44(u_history, Q_mat, dt, m)
-    # Add other RK methods if needed (ensure they handle history array correctly)
-    # elif rktype == 'RK22': u_history = rk22(u_history, Q_mat, dt, m)
-    else:
-        print(f"Error: Unsupported rktype '{rktype}' for Legendre core sim.")
-        return None # Indicate failure
-    print("Time integration finished.")
-
-    # Return the full history (may contain NaNs if RK failed)
+    print(f"Starting time integration ({rktype}, n={n}, p={p})...", end=' ', flush=True)
+    if rktype == 'RK44': u_history = rk44(u_history, Q_mat, dt, m)
+    else: print(f"Error: Unsupported rktype '{rktype}'"); return None
+    print("Integration finished.")
     return u_history
 
 
 # --- Evaluate Legendre DG Solution ---
 def evaluate_dg_solution_legendre(x_eval, coeffs_history_flat, L, n, p, time_step_index):
-    """ Evaluates the Legendre DG solution at specific points x for a given time step. """
+    """ Evaluates the Legendre DG solution from coefficient history at a time index. """
     N_dof = n * (p + 1)
-    if time_step_index >= coeffs_history_flat.shape[0]:
-        raise IndexError("time_step_index out of bounds for coeffs_history_flat")
+    if time_step_index >= coeffs_history_flat.shape[0]: raise IndexError("time_step_index OOB")
 
     coeffs_flat_at_time = coeffs_history_flat[time_step_index]
-
-    if coeffs_flat_at_time is None or not np.all(np.isfinite(coeffs_flat_at_time)):
-        print(f"Warning: Evaluating Legendre DG solution with invalid coefficients at time step {time_step_index}.")
+    if not np.all(np.isfinite(coeffs_flat_at_time)):
+        print(f"Warn: Evaluating Legendre DG w/ invalid coeffs @ t_idx={time_step_index}.")
         return np.full_like(x_eval, np.nan, dtype=float)
 
     coeffs_element_wise = coeffs_flat_at_time.reshape((n, p + 1)).T # Shape (p+1, n)
     dx = L / n
-    if dx <= 1e-15: raise ValueError("dx is too small.")
+    if dx <= 1e-15: raise ValueError("dx too small.")
     u_h_eval = np.zeros_like(x_eval, dtype=float)
-    psi_basis = [legendre(i) for i in range(p + 1)] # P_0 to P_p
+    psi_basis = [legendre(i) for i in range(p + 1)]
 
     for i, x_val in enumerate(x_eval):
-        # Determine element index k and local coordinate xi in [-1, 1]
         if x_val >= L: element_idx, xi_val = n - 1, 1.0
         elif x_val <= 0: element_idx, xi_val = 0, -1.0
         else:
-            element_idx = int(np.floor(x_val / dx))
-            element_idx = min(element_idx, n - 1)
+            element_idx = min(int(np.floor(x_val / dx)), n - 1)
             x_left = element_idx * dx
-            xi_val = 2.0 * (x_val - x_left) / dx - 1.0
-            xi_val = np.clip(xi_val, -1.0, 1.0)
+            xi_val = np.clip(2.0 * (x_val - x_left) / dx - 1.0, -1.0, 1.0)
 
-        # Evaluate u_h(xi) = sum_j coeffs[j] * P_j(xi)
-        psi_vals_at_xi = np.array([psi(xi_val) for psi in psi_basis]) # Shape (p+1,)
-        coeffs_k = coeffs_element_wise[:, element_idx] # Shape (p+1,)
+        psi_vals_at_xi = np.array([psi(xi_val) for psi in psi_basis])
+        coeffs_k = coeffs_element_wise[:, element_idx]
         u_h_eval[i] = np.dot(coeffs_k, psi_vals_at_xi)
-
     return u_h_eval
+
 
 # --- L2 Error Calculation (Legendre) ---
 def calculate_l2_error_legendre(coeffs_final_flat, f_initial_func, L, n, p, c, T_final):
     """ Calculates L2 error for Legendre DG solution at T_final. """
-    print(f"Calculating L2 error (Legendre P{p}, n={n})...")
-
+    print(f"Calculating L2 error (Legendre P{p}, n={n})...", end=' ', flush=True)
     if coeffs_final_flat is None or not np.all(np.isfinite(coeffs_final_flat)):
-        print(f"Warning: Cannot calculate L2 error for n={n}, p={p} due to invalid final coefficients. Returning NaN.")
-        return np.nan
+        print(f"Warn: Invalid final coeffs. Returning NaN."); return np.nan
 
-    num_quad = p + 1 # Need 2p+1 degree exactness -> use p+1 points for Gauss-Legendre?
-                     # Let's use more points for safety, e.g., 2p+1 points? Or just p+2?
-    num_quad = max(p + 2, 5) # Ensure enough points, at least 5
-    try:
-        xi_quad, w_quad = roots_legendre(num_quad)
-    except Exception as e:
-        print(f"Error getting Legendre roots: {e}")
-        return np.nan
+    num_quad = max(p + 2, 5);
+    try: xi_quad, w_quad = roots_legendre(num_quad)
+    except Exception as e: print(f"Error Legendre roots: {e}"); return np.nan
 
-    l2_error_sq_sum = 0.0
-    dx = L / n
-    if dx <= 1e-15:
-        print(f"Warning: dx={dx} too small for L2 error calc (n={n}). Returning NaN.")
-        return np.nan
+    l2_error_sq_sum = 0.0; dx = L / n
+    if dx <= 1e-15: print(f"Warn: dx={dx} too small (n={n}). NaN."); return np.nan
     jacobian = dx / 2.0
 
-    coeffs_element_wise = coeffs_final_flat.reshape((n, p + 1)).T # Shape (p+1, n)
+    coeffs_element_wise = coeffs_final_flat.reshape((n, p + 1)).T
     psi_basis = [legendre(i) for i in range(p + 1)]
-    # Pre-evaluate basis functions at reference quadrature points
-    psi_vals_at_ref_quad = np.array([psi(xi_quad) for psi in psi_basis]) # Shape (p+1, num_quad)
+    psi_vals_at_ref_quad = np.array([psi(xi_quad) for psi in psi_basis])
 
     u_exact_final_func = lambda x: u_exact(x, T_final, L, c, f_initial_func)
 
     for k in range(n):
         x_left = k * dx
-        x_quad_k = x_left + (xi_quad + 1.0) * jacobian # Physical quad points in element k
-
-        # Evaluate DG solution u_h at physical quadrature points using coefficients
-        coeffs_k = coeffs_element_wise[:, k] # Coefficients for element k, shape (p+1,)
-        # u_h(xi_q) = Sum_i coeffs_k[i] * P_i(xi_q)
-        u_h_at_ref_quad = np.dot(coeffs_k, psi_vals_at_ref_quad) # Shape (num_quad,)
-
-        # Evaluate exact solution u_ex at physical quadrature points
+        x_quad_k = x_left + (xi_quad + 1.0) * jacobian
+        coeffs_k = coeffs_element_wise[:, k]
+        u_h_at_ref_quad = np.dot(coeffs_k, psi_vals_at_ref_quad)
         u_ex_at_quad_k = u_exact_final_func(x_quad_k)
-
-        # Calculate squared error at quadrature points
         error_sq_at_quad = (u_h_at_ref_quad - u_ex_at_quad_k)**2
-
-        # Add contribution from element k to the total L2 error squared integral
         l2_error_sq_sum += np.sum(w_quad * error_sq_at_quad) * jacobian
 
     if l2_error_sq_sum < 0 or not np.isfinite(l2_error_sq_sum):
-        print(f"Warning: Invalid L2 error sum ({l2_error_sq_sum}) before sqrt for n={n}, p={p}. Returning NaN.")
-        return np.nan
+        print(f"Warn: Invalid L2 sum {l2_error_sq_sum} (n={n},p={p}). NaN."); return np.nan
 
     l2_error = np.sqrt(l2_error_sq_sum)
-    print(f"L2 Error ||u_h - u_exact|| at T={T_final:.2f} (n={n}, p={p}) = {l2_error:.6e}")
+    print(f"L2 Error= {l2_error:.6e}")
     return l2_error
+
 
 # --- Animation Function (Legendre) ---
 def plot_function_legendre(u_coeffs_history_flat, L, n, p, dt, m, c, f_initial_func, save=False, tend=0.):
     """ Creates animation of the Legendre DG solution vs exact solution. """
     N_dof = n * (p + 1)
-    n_plot_eval_per_elem = 20 # Points per element for smooth plotting
+    n_plot_eval_per_elem = 20
     x_plot_full = np.linspace(0., L, n * n_plot_eval_per_elem + 1)
 
-    # Check for NaNs in history
     if np.any(np.isnan(u_coeffs_history_flat)):
-        print("\nWarning: Simulation history contains NaNs. Animation may be incomplete.")
+        print("\nWarn: History contains NaNs. Animation may be incomplete.")
         first_nan_step = np.where(np.isnan(u_coeffs_history_flat))[0]
         m_plot = first_nan_step[0] if len(first_nan_step) > 0 else m
-        print(f"Plotting animation frames up to step {m_plot}.")
-    else:
-        m_plot = m
+        print(f"Plotting up to step {m_plot}.")
+    else: m_plot = m
 
-    # Reconstruct solution u(x,t) from coefficients for plotting
     print("Reconstructing solution for animation...")
     v_plot = np.zeros((m_plot + 1, len(x_plot_full)))
-    for time_idx in tqdm(range(m_plot + 1), desc="Reconstructing Frames"):
-        try:
-            v_plot[time_idx, :] = evaluate_dg_solution_legendre(
-                x_plot_full, u_coeffs_history_flat, L, n, p, time_idx)
-        except Exception as e:
-            print(f"Error reconstructing frame {time_idx}: {e}. Skipping rest.")
-            v_plot[time_idx:, :] = np.nan # Mark subsequent frames as invalid
-            break # Stop reconstruction
+    for time_idx in tqdm(range(m_plot + 1), desc="Reconstructing Frames", leave=False):
+        try: v_plot[time_idx, :] = evaluate_dg_solution_legendre(x_plot_full, u_coeffs_history_flat, L, n, p, time_idx)
+        except Exception as e: print(f"Error reconstr. frame {time_idx}: {e}. Skip."); v_plot[time_idx:, :] = np.nan; break
 
-    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    fig.tight_layout(pad=3.0)
-    ax.grid(True, linestyle=':')
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6)); fig.tight_layout(pad=3.0); ax.grid(True, linestyle=':')
 
     global ftSz1, ftSz2, ftSz3
     try: ftSz1
     except NameError: ftSz1, ftSz2, ftSz3 = 16, 14, 12
-    plt.rcParams["text.usetex"] = False
-    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams["text.usetex"] = False; plt.rcParams['font.family'] = 'serif'
 
-    time_template = r'$t = \mathtt{{{:.4f}}} \;[s]$'
-    time_text = ax.text(0.75, 0.90, '', fontsize=ftSz1, transform=ax.transAxes)
-
-    dg_line, = ax.plot([], [], color='b', lw=1.5, label=f'DG Solution (Legendre P{p}, n={n}, RK44)')
+    time_template=r'$t = \mathtt{{{:.4f}}} \;[s]$'; time_text = ax.text(0.75, 0.90, '', fontsize=ftSz1, transform=ax.transAxes)
+    dg_line, = ax.plot([], [], color='b', lw=1.5, label=f'DG (Legendre P{p}, n={n})')
     exact_func_t = lambda x, t: u_exact(x, t, L, c, f_initial_func)
     exact, = ax.plot([], [], color='r', alpha=0.7, lw=3, zorder=0, label='Exact')
     initial_exact_y = exact_func_t(x_plot_full, 0)
     ymin = min(initial_exact_y) - 0.3; ymax = max(initial_exact_y) + 0.3
     ax.set_ylim(ymin, ymax); ax.set_xlim(0, L)
-    ax.set_xlabel(r"$x$", fontsize=ftSz2); ax.set_ylabel(r"$u(x,t)$", fontsize=ftSz2)
-    ax.legend(fontsize=ftSz3)
+    ax.set_xlabel(r"$x$", fontsize=ftSz2); ax.set_ylabel(r"$u(x,t)$", fontsize=ftSz2); ax.legend(fontsize=ftSz3)
 
     def init():
-        dg_line.set_data([], [])
-        exact.set_data(x_plot_full, initial_exact_y)
-        time_text.set_text(time_template.format(0))
+        dg_line.set_data([], []); exact.set_data(x_plot_full, initial_exact_y); time_text.set_text(time_template.format(0))
         return tuple([dg_line, exact, time_text])
 
     def animate(t_idx):
         if t_idx < v_plot.shape[0] and np.all(np.isfinite(v_plot[t_idx, :])):
             current_time = t_idx * dt
-            dg_line.set_data(x_plot_full, v_plot[t_idx, :])
-            exact.set_ydata(exact_func_t(x_plot_full, current_time))
+            dg_line.set_data(x_plot_full, v_plot[t_idx, :]); exact.set_ydata(exact_func_t(x_plot_full, current_time))
             time_text.set_text(time_template.format(current_time))
         return tuple([dg_line, exact, time_text])
 
     fps = 30
-    num_frames_to_show = np.where(np.isnan(v_plot[:,0]))[0] # Find first NaN frame
+    num_frames_to_show = np.where(np.isnan(v_plot[:,0]))[0]
     num_frames_to_show = num_frames_to_show[0] if len(num_frames_to_show) > 0 else m_plot + 1
     interval = max(1, int(1000.0 / fps))
 
     print("Creating animation...")
-    anim = FuncAnimation(fig, animate, frames=num_frames_to_show, interval=interval, blit=False,
-                         init_func=init, repeat=False)
+    anim = FuncAnimation(fig, animate, frames=num_frames_to_show, interval=interval, blit=False, init_func=init, repeat=False)
 
     if save:
-        output_dir = './figures'
-        if not os.path.exists(output_dir): os.makedirs(output_dir)
+        output_dir = './figures'; os.makedirs(output_dir, exist_ok=True)
         ic_name_str = f_initial_func.__name__.replace('ic_', '')
         anim_filename = os.path.join(output_dir, f"dg_advection_legendre_p{p}_n{n}_{ic_name_str}_RK44.mp4")
         print(f"Saving animation to {anim_filename}...")
-        writerMP4 = FFMpegWriter(fps=fps)
-        try: anim.save(anim_filename, writer=writerMP4); print("Animation saved.")
-        except Exception as e: print(f"Error saving animation: {e}")
+        try: anim.save(anim_filename, writer=FFMpegWriter(fps=fps)); print("Saved.")
+        except Exception as e: print(f"Error saving animation: {e}"); plt.show()
     else: plt.show()
     return anim
 
@@ -442,47 +295,40 @@ def plot_function_legendre(u_coeffs_history_flat, L, n, p, dt, m, c, f_initial_f
 def advection1d_legendre_solver(L, n, p, dt, m, c, f_initial_func, a, rktype='RK44',
                                anim=True, save=False, tend=0., plot_final=True):
     """ Wrapper to run Legendre DG simulation and handle post-processing. """
-
-    # Run the core simulation
-    u_coeffs_history_flat = run_simulation_core_legendre(
-        L, n, p, dt, m, c, f_initial_func, a, rktype)
+    u_coeffs_history_flat = run_simulation_core_legendre(L, n, p, dt, m, c, f_initial_func, a, rktype)
 
     if u_coeffs_history_flat is None or np.any(np.isnan(u_coeffs_history_flat)):
-        print(f"\n--- Simulation failed for n={n}, p={p} ---")
-        return None, np.nan, None # Indicate failure
+        print(f"\n--- Simulation failed (P{p}, n={n}) ---")
+        return None, np.nan, None
 
     u_coeffs_final_flat = u_coeffs_history_flat[m]
-
-    # --- Post-processing ---
     animation_object = None
-    if anim:
-        animation_object = plot_function_legendre(
-            u_coeffs_history_flat, L, n, p, dt, m, c, f_initial_func, save, tend)
+    if anim: animation_object = plot_function_legendre(u_coeffs_history_flat, L, n, p, dt, m, c, f_initial_func, save, tend)
 
-    if plot_final and not anim:
+    if plot_final and (not anim or np.any(np.isnan(u_coeffs_history_flat))): # Plot if no anim or if anim failed
         print("\nPlotting final solution comparison...")
         n_plot_points_per_element = 50
         x_plot = np.linspace(0, L, n * n_plot_points_per_element + 1)
-        u_h_final = evaluate_dg_solution_legendre(
-            x_plot, u_coeffs_history_flat, L, n, p, m) # Evaluate at final time m
+        u_h_final = evaluate_dg_solution_legendre(x_plot, u_coeffs_history_flat, L, n, p, m)
         u_ex_final = u_exact(x_plot, tend, L, c, f_initial_func)
 
         plt.figure(figsize=(10, 6))
-        plt.plot(x_plot, u_ex_final, 'r-', linewidth=3, alpha=0.7, label=f'Exact Solution at T={tend:.2f}')
-        plt.plot(x_plot, u_h_final, 'b-', linewidth=1.5, label=f'DG Solution (Legendre P{p}, n={n}, RK44)')
+        plt.plot(x_plot, u_ex_final, 'r-', linewidth=3, alpha=0.7, label=f'Exact Sol. T={tend:.2f}')
+        # Only plot DG if it's finite
+        if np.all(np.isfinite(u_h_final)):
+             plt.plot(x_plot, u_h_final, 'b-', linewidth=1.5, label=f'DG (Legendre P{p}, n={n})')
+        else:
+             plt.plot([], [], 'b-', label=f'DG (Legendre P{p}, n={n}) - FAILED') # Placeholder for legend
+
         for k_elem in range(n + 1): plt.axvline(k_elem * L / n, color='gray', linestyle=':', linewidth=0.5)
         plt.xlabel("x", fontsize=ftSz2); plt.ylabel("u(x, T)", fontsize=ftSz2)
-        plt.title(f"DG Legendre P{p} Solution vs Exact Solution at T={tend:.2f} (Final)", fontsize=ftSz1)
+        plt.title(f"DG Legendre P{p} Solution vs Exact at T={tend:.2f}", fontsize=ftSz1)
         plt.legend(fontsize=ftSz3); plt.grid(True, linestyle=':')
-        ymin = min(u_ex_final.min(), u_h_final.min()) - 0.2
-        ymax = max(u_ex_final.max(), u_h_final.max()) + 0.2
-        plt.ylim(ymin, ymax)
-        plt.show()
+        ymin = min(u_ex_final.min(), np.nanmin(u_h_final) if not np.all(np.isnan(u_h_final)) else -1.5) - 0.2
+        ymax = max(u_ex_final.max(), np.nanmax(u_h_final) if not np.all(np.isnan(u_h_final)) else 1.5) + 0.2
+        plt.ylim(ymin, ymax); plt.show()
 
-    # Calculate L2 error
-    l2_error = calculate_l2_error_legendre(
-        u_coeffs_final_flat, f_initial_func, L, n, p, c, tend)
-
+    l2_error = calculate_l2_error_legendre(u_coeffs_final_flat, f_initial_func, L, n, p, c, tend)
     return u_coeffs_final_flat, l2_error, animation_object
 
 
@@ -492,77 +338,42 @@ def run_convergence_study_legendre(L, p, c, T_final, f_initial_func, upwind_para
     print(f"\n--- Starting Convergence Study (Legendre P{p}) ---")
     if not callable(f_initial_func): raise TypeError("f_initial_func must be callable.")
     if cfl_target is None and dt_fixed is None: raise ValueError("Need cfl_target or dt_fixed.")
-    if cfl_target is not None and dt_fixed is not None:
-        print("Warning: Using cfl_target, ignoring dt_fixed.")
-        dt_fixed = None
+    if cfl_target is not None and dt_fixed is not None: print("Warn: Using cfl_target, ignore dt_fixed."); dt_fixed = None
 
-    l2_errors = []
-    h_values = []
+    l2_errors = []; h_values = []
+    order_expected = p + 1
 
     for n_conv in n_values:
-        print(f"\nRunning Convergence Study for n = {n_conv} (p={p})")
+        print(f"\nRun Conv Study: n={n_conv}, p={p}")
         dx_conv = L / n_conv
-        if dx_conv <= 1e-15:
-             print(f"Warning: dx={dx_conv} too small for n={n_conv}. Skipping."); l2_errors.append(np.nan)
-             h_values.append(dx_conv if dx_conv > 0 else np.nan); continue
+        if dx_conv <= 1e-15: print(f"Warn: dx={dx_conv} skip."); l2_errors.append(np.nan); h_values.append(dx_conv if dx_conv > 0 else np.nan); continue
         h_values.append(dx_conv)
 
-        # Determine dt and m
         dt_conv = 0.0
-        if dt_fixed is not None:
-            if dt_fixed <= 0: raise ValueError("dt_fixed must be positive.")
-            dt_conv = dt_fixed
-        else: # Use CFL
-            if cfl_target is None or cfl_target <= 0: raise ValueError("cfl_target must be positive.")
-            # CFL for DG Legendre P(p): dt <= C * dx / (c * (2p+1)) approx?
-            # A simple scaling dt ~ dx/c often works for basic checks with safety factor
-            if abs(c) > 1e-12:
-                # The factor (2p+1) is sometimes used as a heuristic stability limit scaling
-                # dt_conv = cfl_target * dx_conv / (abs(c) * (2.0*p + 1.0)) # More conservative heuristic
-                dt_conv = cfl_target * dx_conv / abs(c) # Simpler scaling
+        if dt_fixed is not None: dt_conv = dt_fixed
+        else:
+            if cfl_target is None or cfl_target <= 0: raise ValueError("cfl_target must be > 0.")
+            if abs(c) > 1e-12: dt_conv = cfl_target * dx_conv / abs(c) # Simple scaling sufficient w/ safety factor
             else: dt_conv = T_final / 100.0
-            if dt_conv <= 1e-15:
-                 print(f"Warning: dt={dt_conv} too small for n={n_conv}. Skipping."); l2_errors.append(np.nan); continue
+            if dt_conv <= 1e-15: print(f"Warn: dt={dt_conv} skip."); l2_errors.append(np.nan); continue
 
         m_conv = max(1, int(np.ceil(T_final / dt_conv)))
         dt_adjusted_conv = T_final / m_conv
         actual_cfl_simple = abs(c) * dt_adjusted_conv / dx_conv if abs(dx_conv) > 1e-12 and abs(c) > 1e-12 else 0
-        # actual_cfl_p_scaled = actual_cfl_simple * (2.0*p + 1.0) # Heuristic scaling
+        print(f"  dx={dx_conv:.3e}, m={m_conv}, dt={dt_adjusted_conv:.3e}, CFL_simple={actual_cfl_simple:.3f}")
 
-        print(f"  dx = {dx_conv:.4e}")
-        print(f"  m = {m_conv}, dt = {dt_adjusted_conv:.4e}, Simple CFL = {actual_cfl_simple:.3f}")
+        u_coeffs_history = run_simulation_core_legendre(L, n_conv, p, dt_adjusted_conv, m_conv, c, f_initial_func, upwind_param, rk_method)
 
-        # Run simulation core
-        u_coeffs_history = run_simulation_core_legendre(
-            L, n_conv, p, dt_adjusted_conv, m_conv, c,
-            f_initial_func, upwind_param, rk_method)
+        if u_coeffs_history is None or np.any(np.isnan(u_coeffs_history)): print(f"Sim failed n={n_conv}."); l2_errors.append(np.nan)
+        else: l2_errors.append(calculate_l2_error_legendre(u_coeffs_history[m_conv], f_initial_func, L, n_conv, p, c, T_final))
 
-        # Check failure and calculate L2 error
-        if u_coeffs_history is None or np.any(np.isnan(u_coeffs_history)):
-            print(f"Simulation failed for n={n_conv}, cannot calculate L2 error.")
-            l2_errors.append(np.nan)
-        else:
-            u_coeffs_final = u_coeffs_history[m_conv]
-            l2_err_n = calculate_l2_error_legendre(
-                u_coeffs_final, f_initial_func, L, n_conv, p, c, T_final)
-            l2_errors.append(l2_err_n)
-
-    # --- Plotting Convergence Results ---
-    h_values = np.array(h_values)
-    l2_errors = np.array(l2_errors)
-
+    h_values = np.array(h_values); l2_errors = np.array(l2_errors)
     valid_mask = np.isfinite(h_values) & np.isfinite(l2_errors) & (l2_errors > 1e-15)
-    h_valid = h_values[valid_mask]
-    l2_errors_valid = l2_errors[valid_mask]
+    h_valid = h_values[valid_mask]; l2_errors_valid = l2_errors[valid_mask]
 
     rates = []
     if len(h_valid) > 1:
-        log_errors = np.log(l2_errors_valid)
-        log_h = np.log(h_valid)
-        sort_indices = np.argsort(h_valid)[::-1] # Sort h descending
-        h_sorted = h_valid[sort_indices]
-        log_errors_sorted = log_errors[sort_indices]
-        log_h_sorted = log_h[sort_indices]
+        sort_indices = np.argsort(h_valid)[::-1]; h_sorted = h_valid[sort_indices]; log_errors_sorted = np.log(l2_errors_valid[sort_indices]); log_h_sorted = np.log(h_sorted)
         rates = (log_errors_sorted[:-1] - log_errors_sorted[1:]) / (log_h_sorted[:-1] - log_h_sorted[1:])
 
     print(f"\n--- Convergence Study Results (Legendre P{p}) ---")
@@ -570,45 +381,88 @@ def run_convergence_study_legendre(L, p, c, T_final, f_initial_func, upwind_para
     print("-------|------------|--------------|--------------")
     n_values_valid = [n for n, h in zip(n_values, h_values) if h in h_valid]
     n_print_order = [n_values_valid[i] for i in sort_indices]
-    h_print_order = h_sorted
-    l2_print_order = np.exp(log_errors_sorted)
-
-    order_expected = p + 1 # Theoretical L2 convergence rate
+    h_print_order = h_sorted; l2_print_order = np.exp(log_errors_sorted)
 
     if len(n_print_order) > 0:
-        print(f"{n_print_order[0]:>6d} | {h_print_order[0]:.6f} | {l2_print_order[0]:.6e} |     -    ")
-        for i in range(len(rates)):
-             print(f"{n_print_order[i+1]:>6d} | {h_print_order[i+1]:.6f} | {l2_print_order[i+1]:.6e} |   {rates[i]:.3f}  ")
+        print(f"{int(n_print_order[0]):>6d} | {h_print_order[0]:.6f} | {l2_print_order[0]:.6e} |     -    ")
+        for i in range(len(rates)): print(f"{int(n_print_order[i+1]):>6d} | {h_print_order[i+1]:.6f} | {l2_print_order[i+1]:.6e} |   {rates[i]:.3f}  ")
     else: print("No valid points found for convergence analysis.")
     print("---------------------------------")
     if len(rates) > 0: print(f"Average Observed Rate: {np.mean(rates):.3f}")
-    print(f"(Expected rate for P{p} elements is ~{order_expected:.1f} for smooth solutions)")
+    print(f"(Expected rate for P{p} is ~{order_expected:.1f} for smooth solutions)")
 
     plt.figure(figsize=(8, 6))
     plt.loglog(h_valid, l2_errors_valid, 'bo-', markerfacecolor='none', label=f'L2 Error (P{p})')
     if len(h_valid) > 0:
         C_ref = l2_errors_valid[0] / (h_valid[0]**order_expected)
         h_plot_ref = np.sort(h_valid)
-        plt.loglog(h_plot_ref, C_ref * h_plot_ref**order_expected,
-                   'r--', label=f'$\\mathcal{{O}}(h^{order_expected})$ Ref.')
+        plt.loglog(h_plot_ref, C_ref * h_plot_ref**order_expected, 'r--', label=f'$\\mathcal{{O}}(h^{order_expected})$ Ref.')
 
-    plt.xlabel("Element Size $h = L/n$", fontsize=ftSz2)
-    plt.ylabel("$L_2$ Error at $T_{final}$", fontsize=ftSz2)
+    plt.xlabel("Element Size $h = L/n$", fontsize=ftSz2); plt.ylabel("$L_2$ Error at $T_{final}$", fontsize=ftSz2)
     plt.title(f"DG Legendre P{p} Convergence (IC: {f_initial_func.__name__})", fontsize=ftSz1)
     plt.gca().invert_xaxis(); plt.grid(True, which='both', linestyle=':')
     plt.legend(fontsize=ftSz3); plt.show()
 
 
+# --- Comparison Plot for Different n (Legendre) ---
+def plot_comparison_n_legendre(L, p, c, T_final, f_initial_func, upwind_param, rk_method, n_values_to_compare, cfl_target):
+    """ Plots the final DG Legendre solution for different n against the exact solution. """
+    print(f"\n--- Plotting Comparison for Different n (Legendre P{p}) ---")
+
+    n_plot_points_per_element = 50
+    # Use the finest n to determine the plot resolution
+    n_fine_plot = max(n_values_to_compare) if n_values_to_compare else 10
+    x_plot = np.linspace(0, L, n_fine_plot * n_plot_points_per_element + 1)
+    u_ex_final = u_exact(x_plot, T_final, L, c, f_initial_func)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(x_plot, u_ex_final, 'k--', linewidth=2.5, label=f'Exact T={T_final:.1f}') # Use black dashed for exact
+
+    colors = plt.cm.viridis(np.linspace(0, 0.9, len(n_values_to_compare))) # Color map
+
+    for i, n_comp in enumerate(n_values_to_compare):
+        print(f"Running for comparison plot: n={n_comp}")
+        dx_comp = L / n_comp
+        dt_comp = 0.0
+        if abs(c) > 1e-12: dt_comp = cfl_target * dx_comp / abs(c)
+        else: dt_comp = T_final / 100.0
+        if dt_comp <= 1e-15: print(f"Warn: dt={dt_comp} skip n={n_comp}."); continue
+
+        m_comp = max(1, int(np.ceil(T_final / dt_comp)))
+        dt_adjusted_comp = T_final / m_comp
+        print(f"  dt={dt_adjusted_comp:.3e}, m={m_comp}")
+
+        coeffs_history = run_simulation_core_legendre(
+            L, n_comp, p, dt_adjusted_comp, m_comp, c, f_initial_func, upwind_param, rk_method)
+
+        if coeffs_history is None or np.any(np.isnan(coeffs_history)):
+            print(f"Sim failed n={n_comp}, cannot plot.")
+            plt.plot([],[], linestyle='-', color=colors[i], label=f'DG P{p} (n={n_comp}) - FAILED')
+        else:
+            u_h_final = evaluate_dg_solution_legendre(
+                x_plot, coeffs_history, L, n_comp, p, m_comp)
+            if np.all(np.isfinite(u_h_final)):
+                 plt.plot(x_plot, u_h_final, linestyle='-', color=colors[i], linewidth=1.5, label=f'DG P{p} (n={n_comp})')
+            else: # Should be caught above, but fallback
+                 plt.plot([],[], linestyle='-', color=colors[i], label=f'DG P{p} (n={n_comp}) - NaN Eval')
+
+
+    plt.xlabel("x", fontsize=ftSz2); plt.ylabel(f"u(x, T={T_final:.1f})", fontsize=ftSz2)
+    plt.title(f"Comparison of DG Legendre P{p} Solutions for Different n", fontsize=ftSz1)
+    plt.legend(fontsize=ftSz3); plt.grid(True, linestyle=':')
+    ymin = u_ex_final.min() - 0.2; ymax = u_ex_final.max() + 0.2 # Base ylim on exact
+    plt.ylim(ymin, ymax); plt.show()
+
+
 # --- Matplotlib Global Settings ---
-ftSz1, ftSz2, ftSz3 = 20, 17, 14
+ftSz1, ftSz2, ftSz3 = 16, 14, 12 # Slightly smaller defaults
 plt.rcParams["text.usetex"] = False
 plt.rcParams['font.family'] = 'serif'
 
 # --- Exact Solution Function ---
 def u_exact(x, t, L, c, initial_func):
     """ Calculates the exact solution u(x,t) = u0(x-ct) with periodic wrapping. """
-    x = np.asarray(x)
-    x_origin = np.mod(x - c * t, L)
+    x = np.asarray(x); x_origin = np.mod(x - c * t, L)
     return initial_func(x_origin, L)
 
 # ==============================================================
@@ -616,73 +470,100 @@ def u_exact(x, t, L, c, initial_func):
 # ==============================================================
 if __name__ == "__main__":
 
+    # --- Plot Basis Functions P0, P1 (Only relevant if p>=1) ---
+    p_basis_plot = 1 # Choose p to plot basis for
+    print(f"Plotting P0..P{p_basis_plot} Legendre Basis Functions...")
+    xi_plot_basis = np.linspace(-1, 1, 200)
+    plt.figure(figsize=(8, 5))
+    colors_basis = plt.cm.viridis(np.linspace(0, 1, p_basis_plot + 1)) # Using Viridis colormap
+    for i in range(p_basis_plot + 1):
+         Pi_func = legendre(i)
+         Pi_vals = Pi_func(xi_plot_basis)
+         # Construct the label using LaTeX formatting
+         label_base = f'P_{i}(\\xi)' # Base label part
+         # Append equation part
+         if i == 0: label_eq = '=1'
+         elif i == 1: label_eq = '=\\xi' # Use LaTeX command for the symbol xi
+         else: label_eq = '' # No equation part for higher orders for now
+         # Enclose the entire label in $...$ for math mode rendering
+         label = f'${label_base}{label_eq}$'
+         plt.plot(xi_plot_basis, Pi_vals, color=colors_basis[i], lw=2, label=label)
+
+    plt.title(f"Legendre Basis Functions (p=0..{p_basis_plot}) on Ref Element [-1, 1]")
+    # Ensure x-axis label also uses the symbol
+    plt.xlabel("Ref Coordinate $\\xi$")
+    plt.ylabel("Basis Function Value")
+    plt.xticks([-1, 0, 1]); plt.yticks([-1, 0, 1])
+    plt.grid(True, linestyle=':'); plt.axhline(0, color='black', lw=0.5); plt.axvline(0, color='black', lw=0.5)
+    plt.legend(fontsize=12); plt.show()
+
+
     # --- Select Mode ---
     run_normal_simulation = True
     run_conv_study = True
+    run_n_comparison_plot = True # <<< New Flag for Comparison Plot
 
     # --- Configuration (Shared) ---
-    L_ = 1.0
-    c_ = 1.0
-    T_final = 1.0
-    p_ = 1           # << SET POLYNOMIAL DEGREE HERE >>
+    L_ = 1.0; c_ = 1.0; T_final = 1.0
+    p_ = 1           # << SET POLYNOMIAL DEGREE HERE (e.g., 0, 1, 2) >>
     rk_method = 'RK44'
     upwind_param = 1.0 # 1.0 for upwind (c>0)
 
     # --- Configuration for Normal Simulation ---
     if run_normal_simulation:
-        n_sim = 40   # Number of elements
+        n_sim = 40
         initial_condition_name = 'sine' # 'sine' or 'square'
+        safety_factor_sim = 0.1 # CFL safety factor
 
-        # --- Time Stepping ---
-        # Simple CFL scaling: dt ~ safety * dx / c
-        safety_factor_sim = 0.1 # Be conservative, especially for higher p
-        dx_sim = L_ / n_sim
-        dt_cfl_sim = 0.0
-        if abs(c_) > 1e-12:
-            # Heuristic: dt ~ dx / (c * (2p+1)) -> add (2p+1) scaling?
-            # dt_cfl_sim = safety_factor_sim * dx_sim / (abs(c_) * (2.0*p_ + 1.0))
-            dt_cfl_sim = safety_factor_sim * dx_sim / abs(c_) # Simpler scaling
+        dx_sim = L_ / n_sim; dt_cfl_sim = 0.0
+        if abs(c_) > 1e-12: dt_cfl_sim = safety_factor_sim * dx_sim / abs(c_)
         else: dt_cfl_sim = T_final / 100.0
         if dt_cfl_sim <= 1e-15: raise ValueError(f"dt={dt_cfl_sim} too small.")
-
-        m_sim = max(1, int(np.ceil(T_final / dt_cfl_sim)))
-        dt_adjusted_sim = T_final / m_sim
-        actual_cfl_sim = abs(c_) * dt_adjusted_sim / dx_sim if abs(dx_sim) > 1e-12 and abs(c_) > 1e-12 else 0
+        m_sim = max(1, int(np.ceil(T_final / dt_cfl_sim))); dt_adjusted_sim = T_final / m_sim
+        actual_cfl_sim = abs(c_) * dt_adjusted_sim / dx_sim if abs(dx_sim)>1e-12 and abs(c_)>1e-12 else 0
 
         print(f"\n--- Running Normal Simulation (Legendre P{p_}) ---")
-        print(f"  n = {n_sim}, T_final = {T_final:.3f}, c = {c_}")
+        print(f"  n={n_sim}, T={T_final:.3f}, c={c_}, p={p_}")
         print(f"  IC: {initial_condition_name}, Upwind alpha: {upwind_param}")
-        print(f"  Safety Factor = {safety_factor_sim}, Simple CFL = {actual_cfl_sim:.3f}")
-        print(f"  m = {m_sim}, dt = {dt_adjusted_sim:.6f}")
+        print(f"  Safety Factor={safety_factor_sim}, Simple CFL={actual_cfl_sim:.3f}")
+        print(f"  m={m_sim}, dt={dt_adjusted_sim:.6f}")
 
         if initial_condition_name == 'sine': f_initial_sim = ic_sine_wave
         elif initial_condition_name == 'square': f_initial_sim = ic_square_wave
         else: raise ValueError(f"Unknown IC name: {initial_condition_name}")
 
-        # Run solver
         coeffs_final_sim, l2_err_sim, anim_obj = advection1d_legendre_solver(
             L_, n_sim, p_, dt_adjusted_sim, m_sim, c_,
             f_initial_func=f_initial_sim, a=upwind_param, rktype=rk_method,
             anim=True, save=False, tend=T_final, plot_final=True
         )
-        if coeffs_final_sim is not None:
-            print(f"\nSimulation Complete (P{p_}, n={n_sim}). Final L2 Error = {l2_err_sim:.6e}")
-        else: print(f"\nSimulation FAILED (P{p_}, n={n_sim}).")
+        if coeffs_final_sim is not None: print(f"\nSim OK (P{p_}, n={n_sim}). L2 Error={l2_err_sim:.6e}")
+        else: print(f"\nSim FAILED (P{p_}, n={n_sim}).")
 
 
     # --- Configuration for Convergence Study ---
     if run_conv_study:
         f_initial_conv = ic_sine_wave # MUST use smooth IC
-        n_values_conv = [5, 10, 20, 40, 80] # As per notes
-        # Use a MORE CONSERVATIVE CFL for study
-        safety_factor_conv = 0.05 # Even smaller safety factor
-        cfl_target_conv = safety_factor_conv # Use safety factor directly as CFL target
+        n_values_conv = [5, 10, 20, 40, 80]
+        safety_factor_conv = 0.05 # Use MORE CONSERVATIVE CFL for study
+        cfl_target_conv = safety_factor_conv
 
+        # Run for the globally set p_ value
         run_convergence_study_legendre(
             L_, p_, c_, T_final, f_initial_conv, upwind_param, rk_method,
-            n_values=n_values_conv,
-            cfl_target=cfl_target_conv, # Use CFL-based dt
-            dt_fixed=None
+            n_values=n_values_conv, cfl_target=cfl_target_conv, dt_fixed=None
+        )
+
+    # --- Configuration for Comparison Plot ---
+    if run_n_comparison_plot:
+        f_initial_comp = ic_sine_wave # Use smooth or non-smooth for visual comparison
+        n_values_comp = [5, 10, 20, 40] # Choose which n values to plot
+        safety_factor_comp = 0.1 # Use a reasonable safety factor like normal sim
+
+        plot_comparison_n_legendre(
+             L_, p_, c_, T_final, f_initial_comp, upwind_param, rk_method,
+             n_values_to_compare=n_values_comp,
+             cfl_target=safety_factor_comp # Use CFL target based on safety factor
         )
 
 
