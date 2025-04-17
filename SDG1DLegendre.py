@@ -343,65 +343,132 @@ def run_convergence_study_legendre(L, p, c, T_final, f_initial_func, upwind_para
     l2_errors = []; h_values = []
     order_expected = p + 1
 
+    # Ensure n_values are sorted for cleaner processing later if needed, though not strictly necessary
+    # as sorting happens before rate calculation anyway.
+    n_values = sorted(list(set(n_values))) # Remove duplicates and sort ascending n
+
     for n_conv in n_values:
         print(f"\nRun Conv Study: n={n_conv}, p={p}")
         dx_conv = L / n_conv
-        if dx_conv <= 1e-15: print(f"Warn: dx={dx_conv} skip."); l2_errors.append(np.nan); h_values.append(dx_conv if dx_conv > 0 else np.nan); continue
+        if dx_conv <= 1e-15:
+            print(f"Warn: dx={dx_conv} too small, skipping n={n_conv}.")
+            # Append NaN placeholders to keep lengths consistent if needed elsewhere,
+            # but they will be filtered out later.
+            l2_errors.append(np.nan)
+            h_values.append(dx_conv if dx_conv > 0 else np.nan)
+            continue
         h_values.append(dx_conv)
 
         dt_conv = 0.0
-        if dt_fixed is not None: dt_conv = dt_fixed
+        if dt_fixed is not None:
+            dt_conv = dt_fixed
         else:
             if cfl_target is None or cfl_target <= 0: raise ValueError("cfl_target must be > 0.")
-            if abs(c) > 1e-12: dt_conv = cfl_target * dx_conv / abs(c) # Simple scaling sufficient w/ safety factor
-            else: dt_conv = T_final / 100.0
-            if dt_conv <= 1e-15: print(f"Warn: dt={dt_conv} skip."); l2_errors.append(np.nan); continue
+            # Ensure dt calculation handles c=0 reasonably
+            if abs(c) > 1e-12:
+                dt_conv = cfl_target * dx_conv / abs(c)
+            else: # If c is zero, advection doesn't occur, CFL is irrelevant. Use a reasonable number of steps.
+                dt_conv = T_final / 200.0 # Arbitrary, but ensures simulation runs
+            if dt_conv <= 1e-15:
+                print(f"Warn: dt={dt_conv} too small, skipping n={n_conv}.")
+                l2_errors.append(np.nan)
+                continue # Skip to next n if dt is too small
 
         m_conv = max(1, int(np.ceil(T_final / dt_conv)))
         dt_adjusted_conv = T_final / m_conv
         actual_cfl_simple = abs(c) * dt_adjusted_conv / dx_conv if abs(dx_conv) > 1e-12 and abs(c) > 1e-12 else 0
         print(f"  dx={dx_conv:.3e}, m={m_conv}, dt={dt_adjusted_conv:.3e}, CFL_simple={actual_cfl_simple:.3f}")
 
+        # Make sure the core runner can handle potential failures gracefully
         u_coeffs_history = run_simulation_core_legendre(L, n_conv, p, dt_adjusted_conv, m_conv, c, f_initial_func, upwind_param, rk_method)
 
-        if u_coeffs_history is None or np.any(np.isnan(u_coeffs_history)): print(f"Sim failed n={n_conv}."); l2_errors.append(np.nan)
-        else: l2_errors.append(calculate_l2_error_legendre(u_coeffs_history[m_conv], f_initial_func, L, n_conv, p, c, T_final))
+        if u_coeffs_history is None or np.any(np.isnan(u_coeffs_history)):
+            print(f"Simulation failed for n={n_conv}. Recording NaN error.")
+            l2_errors.append(np.nan)
+        else:
+            # Calculate L2 error using the final time step coefficients
+            l2_err = calculate_l2_error_legendre(u_coeffs_history[m_conv], f_initial_func, L, n_conv, p, c, T_final)
+            l2_errors.append(l2_err)
 
     h_values = np.array(h_values); l2_errors = np.array(l2_errors)
-    valid_mask = np.isfinite(h_values) & np.isfinite(l2_errors) & (l2_errors > 1e-15)
+
+    # Filter out any runs that failed (NaN error) or had non-positive error/h
+    valid_mask = np.isfinite(h_values) & np.isfinite(l2_errors) & (l2_errors > 1e-15) & (h_values > 1e-15)
     h_valid = h_values[valid_mask]; l2_errors_valid = l2_errors[valid_mask]
+    n_values_valid = [n for n, mask_val in zip(n_values, valid_mask) if mask_val]
 
     rates = []
+    final_rate = np.nan # Initialize final rate
     if len(h_valid) > 1:
-        sort_indices = np.argsort(h_valid)[::-1]; h_sorted = h_valid[sort_indices]; log_errors_sorted = np.log(l2_errors_valid[sort_indices]); log_h_sorted = np.log(h_sorted)
+        # Sort by h decreasing (finest grid last) to calculate rates
+        # We need descending h for rate calculation: (log(err_coarse)-log(err_fine))/(log(h_coarse)-log(h_fine))
+        sort_indices = np.argsort(h_valid)[::-1] # Indices to sort h from largest to smallest
+        h_sorted = h_valid[sort_indices]
+        l2_errors_sorted = l2_errors_valid[sort_indices]
+        n_values_sorted = [n_values_valid[i] for i in sort_indices]
+
+        log_errors_sorted = np.log(l2_errors_sorted)
+        log_h_sorted = np.log(h_sorted)
+
+        # Calculate rates between consecutive points in the sorted list
         rates = (log_errors_sorted[:-1] - log_errors_sorted[1:]) / (log_h_sorted[:-1] - log_h_sorted[1:])
+
+        # *** CHANGE 2: Store the rate from the two finest grids ***
+        # The last element of `rates` corresponds to the rate between the
+        # second-to-last and last points in the sorted list (the two smallest h values).
+        final_rate = rates[-1]
 
     print(f"\n--- Convergence Study Results (Legendre P{p}) ---")
     print("  n    |    h       |   L2 Error   | Approx. Rate")
     print("-------|------------|--------------|--------------")
-    n_values_valid = [n for n, h in zip(n_values, h_values) if h in h_valid]
-    n_print_order = [n_values_valid[i] for i in sort_indices]
-    h_print_order = h_sorted; l2_print_order = np.exp(log_errors_sorted)
 
-    if len(n_print_order) > 0:
-        print(f"{int(n_print_order[0]):>6d} | {h_print_order[0]:.6f} | {l2_print_order[0]:.6e} |     -    ")
-        for i in range(len(rates)): print(f"{int(n_print_order[i+1]):>6d} | {h_print_order[i+1]:.6f} | {l2_print_order[i+1]:.6e} |   {rates[i]:.3f}  ")
-    else: print("No valid points found for convergence analysis.")
-    print("---------------------------------")
-    if len(rates) > 0: print(f"Average Observed Rate: {np.mean(rates):.3f}")
+    # Print table using the sorted data
+    if len(h_sorted) > 0:
+        print(f"{int(n_values_sorted[0]):>6d} | {h_sorted[0]:.6f} | {l2_errors_sorted[0]:.6e} |     -    ")
+        for i in range(len(rates)):
+            print(f"{int(n_values_sorted[i+1]):>6d} | {h_sorted[i+1]:.6f} | {l2_errors_sorted[i+1]:.6e} |   {rates[i]:.3f}  ")
+    else:
+        print("No valid points found for convergence analysis.")
+    print("-------------------------------------------------") # Adjusted separator width
+
+    # *** CHANGE 2: Print the final rate instead of the average ***
+    if not np.isnan(final_rate):
+        print(f"Observed Rate (finest grids): {final_rate:.3f}")
+    else:
+        print("Observed Rate: N/A (need at least 2 valid points)")
     print(f"(Expected rate for P{p} is ~{order_expected:.1f} for smooth solutions)")
 
+    # --- Plotting ---
     plt.figure(figsize=(8, 6))
+    # Plot only valid points
     plt.loglog(h_valid, l2_errors_valid, 'bo-', markerfacecolor='none', label=f'L2 Error (P{p})')
-    if len(h_valid) > 0:
-        C_ref = l2_errors_valid[0] / (h_valid[0]**order_expected)
-        h_plot_ref = np.sort(h_valid)
-        plt.loglog(h_plot_ref, C_ref * h_plot_ref**order_expected, 'r--', label=f'$\\mathcal{{O}}(h^{order_expected})$ Ref.')
 
-    plt.xlabel("Element Size $h = L/n$", fontsize=ftSz2); plt.ylabel("$L_2$ Error at $T_{final}$", fontsize=ftSz2)
+    # Plot reference line if there are valid points
+    if len(h_valid) > 0:
+        # Base the reference line scaling on the finest grid point if possible,
+        # otherwise use the coarsest valid point.
+        # Use the first point in the *original* valid sorted list (smallest h) if available
+        # Or use the first point in the h_sorted list (largest h) if preferred
+        idx_ref = np.argmin(h_valid) # Index of the smallest h in the valid arrays
+        C_ref = l2_errors_valid[idx_ref] / (h_valid[idx_ref]**order_expected)
+
+        # Generate h values for the reference line covering the range of valid h
+        h_plot_ref = np.geomspace(min(h_valid), max(h_valid), 10)
+        plt.loglog(h_plot_ref, C_ref * h_plot_ref**order_expected, 'r--', label=f'$\\mathcal{{O}}(h^{{{order_expected}}})$ Ref.') # Corrected label format
+
+    plt.xlabel("Element Size $h = L/n$", fontsize=ftSz2)
+    plt.ylabel("$L_2$ Error at $T_{final}$", fontsize=ftSz2)
     plt.title(f"DG Legendre P{p} Convergence (IC: {f_initial_func.__name__})", fontsize=ftSz1)
-    plt.gca().invert_xaxis(); plt.grid(True, which='both', linestyle=':')
-    plt.legend(fontsize=ftSz3); plt.show()
+
+    # *** CHANGE 1: Add comment clarifying axis inversion ***
+    plt.gca().invert_xaxis() # Standard practice: Smaller h (finer grid, more elements) on the right
+    plt.grid(True, which='both', linestyle=':')
+    plt.legend(fontsize=ftSz3)
+    plt.show()
+
+    # Return the results if needed elsewhere
+    # Return h_valid, l2_errors_valid, rates, final_rate (optional)
+    # return h_valid, l2_errors_valid, final_rate
 
 
 # --- Comparison Plot for Different n (Legendre) ---
@@ -512,7 +579,7 @@ if __name__ == "__main__":
     # --- Configuration for Normal Simulation ---
     if run_normal_simulation:
         n_sim = 40
-        initial_condition_name = 'sine' # 'sine' or 'square'
+        initial_condition_name = 'square' # 'sine' or 'square'
         safety_factor_sim = 0.1 # CFL safety factor
 
         dx_sim = L_ / n_sim; dt_cfl_sim = 0.0
@@ -543,7 +610,7 @@ if __name__ == "__main__":
 
     # --- Configuration for Convergence Study ---
     if run_conv_study:
-        f_initial_conv = ic_sine_wave # MUST use smooth IC
+        f_initial_conv = ic_square_wave # MUST use smooth IC
         n_values_conv = [5, 10, 20, 40, 80]
         safety_factor_conv = 0.05 # Use MORE CONSERVATIVE CFL for study
         cfl_target_conv = safety_factor_conv
@@ -556,7 +623,7 @@ if __name__ == "__main__":
 
     # --- Configuration for Comparison Plot ---
     if run_n_comparison_plot:
-        f_initial_comp = ic_sine_wave # Use smooth or non-smooth for visual comparison
+        f_initial_comp = ic_square_wave # Use smooth or non-smooth for visual comparison
         n_values_comp = [5, 10, 20, 40] # Choose which n values to plot
         safety_factor_comp = 0.1 # Use a reasonable safety factor like normal sim
 
