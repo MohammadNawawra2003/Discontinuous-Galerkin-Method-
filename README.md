@@ -44,11 +44,10 @@ DG P1 Lagrange Convergence IC square wave:
     20 | 0.050000   | 3.503165e-01 | 0.461
     40 | 0.025000   | 2.596954e-01 | 0.432
     80 | 0.012500   | 1.944811e-01 | 0.417
-   160 | 0.006250   | 1.467797e-01 | 0.406
 ---------------------------------
 Asymptotic Observed Rate (finest grids): 0.406
 (Note: Using discontinuous IC 'ic_square_wave'.
- Expected rate is typically < 2. Often O(h^0.5) to O(h^1) in L2 norm.)
+Expected rate is typically < 2. Often O(h^0.5) to O(h^1) in L2 norm.)
 
 Using IC 'square' from normal simulation for n-comparison plot.
 
