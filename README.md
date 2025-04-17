@@ -34,19 +34,23 @@ Comparison of DG Lagrange P1 Solutions IC square wave:
 ![Comparison of DG Lagrange P1 Solutions IC square wave](https://github.com/user-attachments/assets/71c44ebf-539f-4b09-8795-f52d2cbcf4cc)
 
 DG P1 Lagrange Convergence IC square wave:
-![DG P1 Lagrange Convergence IC square wave](https://github.com/user-attachments/assets/258663f6-bc37-46ad-9107-9dfe600df38a)
+![DG P1 Lagrange Convergence IC square wave](https://github.com/user-attachments/assets/fb6fd23d-98b0-4326-9442-ce8483bdb4f0)
 
---- Convergence Study Results ---
+--- Convergence Study Results (Lagrange P1) ---
   n    |    h       |   L2 Error   | Approx. Rate
 -------|------------|--------------|--------------
-     5 | 0.200000 | 5.674372e-01 |     -
-    10 | 0.100000 | 4.820948e-01 |   0.235
-    20 | 0.050000 | 3.503165e-01 |   0.461
-    40 | 0.025000 | 2.596954e-01 |   0.432
-    80 | 0.012500 | 1.944811e-01 |   0.417
+     5 | 0.200000   | 5.674372e-01 |     -
+    10 | 0.100000   | 4.820948e-01 | 0.235
+    20 | 0.050000   | 3.503165e-01 | 0.461
+    40 | 0.025000   | 2.596954e-01 | 0.432
+    80 | 0.012500   | 1.944811e-01 | 0.417
+   160 | 0.006250   | 1.467797e-01 | 0.406
 ---------------------------------
-Average Observed Rate (where calculable): 0.390
-(Expected rate for P1 elements is ~2.0 for smooth solutions)
+Asymptotic Observed Rate (finest grids): 0.406
+(Note: Using discontinuous IC 'ic_square_wave'.
+ Expected rate is typically < 2. Often O(h^0.5) to O(h^1) in L2 norm.)
+
+Using IC 'square' from normal simulation for n-comparison plot.
 
 
 
