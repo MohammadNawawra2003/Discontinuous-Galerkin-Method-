@@ -2,7 +2,10 @@
 # Implements 1D DG for Advection using P1 Lagrange basis functions.
 # - Consolidated initial conditions.
 # - Optimized M_inv * R calculation using element-wise local inverse.
-# - Added convergence study (L2 error vs h).
+# - Added convergence study (L2 error vs h) with specific table format.
+# - Reports asymptotic rate from finest grids.
+# - Corrected convergence plot order.
+# - Added minor robustness checks for plotting/animation.
 # - Using more conservative CFL in convergence study for stability.
 # Uses Method of Lines with RK44.
 
@@ -14,6 +17,7 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter # For animation
 from tqdm import tqdm                    # For progress bars
 import os                                # For creating directories
 import math                              # For log in convergence rate calculation
+import shutil                            # For checking ffmpeg path
 
 # --- Matplotlib Global Settings ---
 # Define font sizes globally first
@@ -77,8 +81,8 @@ def spatial_operator_lagrangeP1(u_flat, n, L, c, alpha):
         R_flat: Flattened right-hand-side vector R(U) ('b' in notes)
     """
     N_dof = n * 2
-    if u_flat.shape != (N_dof,):
-         raise ValueError(f"Input u_flat has wrong shape {u_flat.shape}, expected ({N_dof},)")
+    if not isinstance(u_flat, np.ndarray) or u_flat.shape != (N_dof,):
+         raise ValueError(f"Input u_flat has wrong shape/type {u_flat.shape}, expected ({N_dof},)")
     u = u_flat.reshape((n, 2)) # Reshape to (n_elements, 2_nodes_per_element)
     R = np.zeros_like(u, dtype=np.float64) # This will hold the element-wise blocks of 'b'
 
@@ -86,8 +90,6 @@ def spatial_operator_lagrangeP1(u_flat, n, L, c, alpha):
     u_prev_elem_right_node = np.roll(u[:, 1], 1) # u[k-1, 1]
 
     # Stiffness-related contribution matrix K_tilde = integral( Lj * dLi/dxi dxi )
-    # Represents the volume integral term c * Sum( U_j * Integral( dphi_i/dxi * phi_j dxi ) )
-    # as calculated in thought process.
     K_tilde = np.array([[-0.5, -0.5],
                         [ 0.5,  0.5]], dtype=np.float64)
 
@@ -97,7 +99,6 @@ def spatial_operator_lagrangeP1(u_flat, n, L, c, alpha):
         u_km1_right = u_prev_elem_right_node[k] # Right nodal value of element k-1
 
         # --- Stiffness Term S_local = c * Integral( d(phi_i)/dx * u dx ) ---
-        # Correctly calculated via K_tilde as derived.
         term_Stiffness = c * (K_tilde @ u_k)
 
         # --- Flux Term Contribution F_local = [c * phi_i * u_hat]_boundary ---
@@ -113,29 +114,15 @@ def spatial_operator_lagrangeP1(u_flat, n, L, c, alpha):
              u_kp1_left = u[ (k+1)%n, 0] # Left node of element k+1 (periodic)
              u_hat_left = 0.5 * (u_km1_right + u_k[0])
              u_hat_right = 0.5 * (u_k[1] + u_kp1_left)
-             if alpha != 0.5: # Add warning if user might expect something else
-                 print(f"Warning: alpha={alpha} specified, using Central Flux (equivalent to alpha=0.5)")
-
+             # Warning removed to avoid noise
 
         flux_val_left = c * u_hat_left
         flux_val_right = c * u_hat_right
 
         # Assemble flux contributions to RHS vector 'b' (R)
-        # Based on M dU/dt = BoundaryFlux - VolumeIntegral(with dphi_i/dx)
-        # BoundaryFlux term for node i = c * ( phi_i(xi=+1)*u_hat_right - phi_i(xi=-1)*u_hat_left )
-        # For i=1 (left node, L1): c * ( L1(1)*u_hat_right - L1(-1)*u_hat_left ) = c * ( 0*u_hat_right - 1*u_hat_left ) = -c * u_hat_left
-        # For i=2 (right node, L2): c * ( L2(1)*u_hat_right - L2(-1)*u_hat_left ) = c * ( 1*u_hat_right - 0*u_hat_left ) = c * u_hat_right
-        # Wait, the derivation in thought process was:
-        # RHS = -c * [phi_i * u_hat]_boundary + c * Integral( dphi_i/dx * u dx )
-        # Boundary term for i=1: -c * [L1(1)*u_hat_right - L1(-1)*u_hat_left] = -c * [0 - 1*u_hat_left] = c*u_hat_left
-        # Boundary term for i=2: -c * [L2(1)*u_hat_right - L2(-1)*u_hat_left] = -c * [1*u_hat_right - 0] = -c*u_hat_right
-        # So, Boundary term vector = [c*u_hat_left, -c*u_hat_right] = [flux_val_left, -flux_val_right]
-        # Okay, the implementation term_Flux_Boundary = [flux_val_left, -flux_val_right] is correct based on this.
-
         term_Flux_Boundary = np.array([flux_val_left, -flux_val_right], dtype=np.float64)
 
         # Assemble R_k = Boundary Flux Term + Volume Integral Term
-        # R_k = [c*u_hat_left, -c*u_hat_right] + c*K_tilde@u_k
         R[k, :] = term_Flux_Boundary + term_Stiffness
 
     return R.reshape(N_dof) # Return flattened 'b' vector
@@ -161,15 +148,22 @@ def rk44_lagrange_local_Minv(u_history, spatial_op_func, M_inv_local, dt, m, n, 
     Returns:
         u_history: The updated solution history array. May contain NaNs if unstable.
     """
+    # Minor optimization: Precompute dt/2 and dt/6
+    dt_half = dt / 2.0
+    dt_sixth = dt / 6.0
+
     print(f"Starting time integration (RK44 Lagrange, Local M_inv)...")
     N_dof = n * 2
     K1_flat = np.zeros(N_dof, dtype=np.float64) # Stores M_inv * R1
     K2_flat = np.zeros(N_dof, dtype=np.float64) # Stores M_inv * R2
     K3_flat = np.zeros(N_dof, dtype=np.float64) # Stores M_inv * R3
     K4_flat = np.zeros(N_dof, dtype=np.float64) # Stores M_inv * R4
+    # Temporary storage for element-wise RHS and K
+    R_local = np.zeros(2, dtype=np.float64)
+    K_local = np.zeros(2, dtype=np.float64)
 
     for i in tqdm(range(m), desc=f"RK44 Lagrange (n={n})", unit="step"):
-        u_current = u_history[i].copy() # Ensure we don't modify previous step accidentally
+        u_current = u_history[i] # No copy needed if we don't modify u_current directly
 
         # Check if previous state is valid before starting RK step
         if not np.all(np.isfinite(u_current)):
@@ -182,35 +176,43 @@ def rk44_lagrange_local_Minv(u_history, spatial_op_func, M_inv_local, dt, m, n, 
             R1_flat = spatial_op_func(u_current, n, L, c, alpha) # Calculate R(u^n) = b1
             for k in range(n): # Apply M_inv_local element-wise: K1[k] = M_k^{-1} * b1[k]
                 idx = slice(2 * k, 2 * k + 2)
-                K1_flat[idx] = M_inv_local @ R1_flat[idx]
+                R_local[:] = R1_flat[idx]
+                K_local[:] = M_inv_local @ R_local
+                K1_flat[idx] = K_local
             if not np.all(np.isfinite(K1_flat)): raise RuntimeError("NaN/Inf in K1")
 
             # Stage 2
-            u_stage2 = u_current + K1_flat * dt / 2.
+            u_stage2 = u_current + K1_flat * dt_half # Use dt/2
             R2_flat = spatial_op_func(u_stage2, n, L, c, alpha) # Calculate R(u_stage2) = b2
             for k in range(n): # Apply M_inv_local element-wise: K2[k] = M_k^{-1} * b2[k]
                 idx = slice(2 * k, 2 * k + 2)
-                K2_flat[idx] = M_inv_local @ R2_flat[idx]
+                R_local[:] = R2_flat[idx]
+                K_local[:] = M_inv_local @ R_local
+                K2_flat[idx] = K_local
             if not np.all(np.isfinite(K2_flat)): raise RuntimeError("NaN/Inf in K2")
 
             # Stage 3
-            u_stage3 = u_current + K2_flat * dt / 2.
+            u_stage3 = u_current + K2_flat * dt_half # Use dt/2
             R3_flat = spatial_op_func(u_stage3, n, L, c, alpha) # Calculate R(u_stage3) = b3
             for k in range(n): # Apply M_inv_local element-wise: K3[k] = M_k^{-1} * b3[k]
                 idx = slice(2 * k, 2 * k + 2)
-                K3_flat[idx] = M_inv_local @ R3_flat[idx]
+                R_local[:] = R3_flat[idx]
+                K_local[:] = M_inv_local @ R_local
+                K3_flat[idx] = K_local
             if not np.all(np.isfinite(K3_flat)): raise RuntimeError("NaN/Inf in K3")
 
             # Stage 4
-            u_stage4 = u_current + K3_flat * dt
+            u_stage4 = u_current + K3_flat * dt # Use full dt
             R4_flat = spatial_op_func(u_stage4, n, L, c, alpha) # Calculate R(u_stage4) = b4
             for k in range(n): # Apply M_inv_local element-wise: K4[k] = M_k^{-1} * b4[k]
                 idx = slice(2 * k, 2 * k + 2)
-                K4_flat[idx] = M_inv_local @ R4_flat[idx]
+                R_local[:] = R4_flat[idx]
+                K_local[:] = M_inv_local @ R_local
+                K4_flat[idx] = K_local
             if not np.all(np.isfinite(K4_flat)): raise RuntimeError("NaN/Inf in K4")
 
             # Final Update: u^{i+1} = u^i + dt/6 * (K1 + 2*K2 + 2*K3 + K4)
-            u_next = u_current + dt * (K1_flat + 2 * K2_flat + 2 * K3_flat + K4_flat) / 6.
+            u_next = u_current + dt_sixth * (K1_flat + 2 * K2_flat + 2 * K3_flat + K4_flat) # Use dt/6
 
              # Final check before assigning to history
             if not np.all(np.isfinite(u_next)):
@@ -225,6 +227,9 @@ def rk44_lagrange_local_Minv(u_history, spatial_op_func, M_inv_local, dt, m, n, 
              return u_history # Stop integration
         except Exception as e:
              print(f"\nError during RK step {i+1} (n={n}): {e}")
+             # Print traceback for unexpected errors
+             import traceback
+             traceback.print_exc()
              u_history[i + 1:, :] = np.nan # Mark as failed
              return u_history
 
@@ -275,6 +280,7 @@ def compute_coefficients_lagrangeP1(f_initial_func, L, n):
 def evaluate_dg_solution_lagrangeP1(x_eval, nodal_vals_flat, L, n):
     """
     Evaluates the P1 Lagrange DG solution u_h(x) at arbitrary points x.
+    Uses vectorized operations for efficiency.
     Args:
         x_eval: Numpy array of x-coordinates where solution is needed.
         nodal_vals_flat: Flat numpy array (N_dof,) of nodal values at a specific time.
@@ -286,67 +292,66 @@ def evaluate_dg_solution_lagrangeP1(x_eval, nodal_vals_flat, L, n):
     N_dof = n*2
     if nodal_vals_flat is None:
         print("Warning: Evaluating DG solution with None input for nodal_vals_flat. Returning NaNs.")
-        return np.full_like(x_eval, np.nan, dtype=float)
+        # Ensure x_eval is array-like before calling full_like
+        return np.full_like(np.asarray(x_eval), np.nan, dtype=float)
 
-    if nodal_vals_flat.shape != (N_dof,):
+    # Check type and shape explicitly
+    if not isinstance(nodal_vals_flat, np.ndarray) or nodal_vals_flat.shape != (N_dof,):
          # Handle case where simulation might have failed and returned NaNs
-         if np.all(np.isnan(nodal_vals_flat)):
+         if isinstance(nodal_vals_flat, np.ndarray) and np.all(np.isnan(nodal_vals_flat)):
              print("Warning: Evaluating DG solution with NaN input array. Returning NaNs.")
-             # Ensure output has same shape as x_eval
              return np.full_like(np.asarray(x_eval), np.nan, dtype=float)
          raise ValueError(f"Expected flat nodal_vals shape ({N_dof},), got {nodal_vals_flat.shape}")
-
-    # Check if input contains NaNs even if shape is correct
-    if not np.all(np.isfinite(nodal_vals_flat)):
-        print("Warning: Evaluating DG solution with NaN/Inf values in nodal_vals_flat. Result may be inaccurate.")
-        # Proceed, but the result will likely contain NaNs where appropriate
 
     nodal_vals_element_wise = nodal_vals_flat.reshape((n, 2)) # (n_elem, 2 nodes)
     dx = L / n
     x_eval = np.asarray(x_eval) # Ensure x_eval is a numpy array
-    u_h_eval = np.zeros_like(x_eval, dtype=float)
 
     if dx <= 1e-15: # Handle case of invalid mesh
         print(f"Warning: Element width dx={dx} too small in evaluation. Returning NaNs.")
         return np.full_like(x_eval, np.nan, dtype=float)
 
-    for i, x_val in enumerate(x_eval):
-        # Ensure x_val is within [0, L] using modulo for periodic cases if needed,
-        # but evaluation typically assumes x within the original domain.
-        # Clamping x_val ensures we get a valid element index.
-        x_val_clamped = np.clip(x_val, 0.0, L)
+    # Vectorized approach for finding element index and local coordinate
+    x_val_clamped = np.clip(x_eval, 0.0, L) # Clamp all points to domain
+    # Calculate element indices, handle right boundary explicitly using clip after floor
+    # Subtract small epsilon BEFORE floor to handle points exactly on right boundary
+    element_indices = np.floor((x_val_clamped - 1e-14) / dx).astype(int)
+    element_indices = np.clip(element_indices, 0, n - 1) # Ensure indices are within [0, n-1]
 
-        # Determine element index k
-        if x_val_clamped >= L: # Handle edge case x=L (belongs to last element)
-             element_idx = n - 1
-        elif x_val_clamped <= 0: # Handle edge case x=0 (belongs to first element)
-             element_idx = 0
-        else:
-            # Calculate element index based on position
-            # Using a small epsilon to handle floating point issues near boundaries
-            element_idx = int(np.floor((x_val_clamped - 1e-14) / dx))
-            element_idx = min(element_idx, n - 1) # Ensure index is valid (<= n-1)
+    # Calculate physical left boundary for each point's element
+    x_left_nodes = element_indices * dx
+    # Calculate local coordinate xi for all points
+    # Add check for dx to prevent division by zero here as well
+    if dx > 1e-14:
+        xi_vals = 2.0 * (x_val_clamped - x_left_nodes) / dx - 1.0
+    else: # Should not happen if check above worked, but defensive
+        xi_vals = np.zeros_like(x_val_clamped)
+    xi_vals = np.clip(xi_vals, -1.0, 1.0) # Clip xi to [-1, 1]
 
+    # Get nodal values for corresponding elements using advanced indexing
+    # Add check for NaN/Inf *before* indexing if needed, although reshape checks finite above
+    if not np.all(np.isfinite(nodal_vals_element_wise)):
+         print("Warning: NaN/Inf detected in reshaped nodal_vals_element_wise during evaluation.")
+         # This might lead to NaNs below, which is handled
 
-        # Calculate local coordinate xi in [-1, 1]
-        x_left = element_idx * dx
-        # Map physical coordinate x_val to reference coordinate xi_val
-        xi_val = 2.0 * (x_val_clamped - x_left) / dx - 1.0
-        # Clip xi_val to [-1, 1] to handle potential floating point inaccuracies
-        xi_val = np.clip(xi_val, -1.0, 1.0)
+    u_left_nodes = nodal_vals_element_wise[element_indices, 0]
+    u_right_nodes = nodal_vals_element_wise[element_indices, 1]
 
-        # Get nodal values for the determined element
-        u_left_node = nodal_vals_element_wise[element_idx, 0]
-        u_right_node = nodal_vals_element_wise[element_idx, 1]
+    # Evaluate using basis functions (vectorized)
+    L1_xi = L1(xi_vals)
+    L2_xi = L2(xi_vals)
+    u_h_eval = u_left_nodes * L1_xi + u_right_nodes * L2_xi
 
-        # Evaluate using basis functions L1, L2: u_h(xi) = U_left*L1(xi) + U_right*L2(xi)
-        # Check if nodal values are finite before evaluation
-        if np.isfinite(u_left_node) and np.isfinite(u_right_node):
-            u_h_eval[i] = u_left_node * L1(xi_val) + u_right_node * L2(xi_val)
-        else:
-            u_h_eval[i] = np.nan # Propagate NaNs
+    # Handle potential NaNs from nodal values *after* evaluation
+    nan_mask = np.isnan(u_left_nodes) | np.isnan(u_right_nodes)
+    if np.any(nan_mask):
+        # Only print if not already warned about input NaNs
+        if np.all(np.isfinite(nodal_vals_flat)):
+            print("Warning: NaNs detected in specific nodal values during evaluation.")
+        u_h_eval[nan_mask] = np.nan
 
     return u_h_eval
+
 
 # --- L2 Error Calculation ---
 def calculate_l2_error_lagrangeP1(u_nodal_final_flat, f_initial_func, L, n, c, T_final):
@@ -369,13 +374,7 @@ def calculate_l2_error_lagrangeP1(u_nodal_final_flat, f_initial_func, L, n, c, T
         print(f"Warning: Cannot calculate L2 error for n={n} due to invalid final solution (NaN/Inf). Returning NaN.")
         return np.nan
 
-    # Quadrature points: Need to integrate (u_h - u_exact)^2 exactly or accurately.
-    # u_h is P1, so (u_h)^2 is P2. If u_exact is smooth, error term is complex.
-    # Order p=1 -> 2p+1 = 3 suggests 2 Gauss points.
-    # Let's use more points for safety, e.g., degree 2*k-1 exactness.
-    # num_quad_points=3 => integrates degree 5 exactly.
-    # num_quad_points=5 => integrates degree 9 exactly.
-    num_quad_points = 5 # Should be sufficient for smooth u_exact.
+    num_quad_points = 5 # Should be sufficient
     try:
         xi_quad, w_quad = roots_legendre(num_quad_points)
     except Exception as e:
@@ -394,6 +393,10 @@ def calculate_l2_error_lagrangeP1(u_nodal_final_flat, f_initial_func, L, n, c, T
     # Exact solution function at T_final
     u_exact_final_func = lambda x: u_exact(x, T_final, L, c, f_initial_func)
 
+    # Pre-evaluate basis functions at quadrature points
+    L1_at_quad = L1(xi_quad)
+    L2_at_quad = L2(xi_quad)
+
     for k in range(n):
         x_left = k * dx
         # Map reference quad points xi_quad in [-1, 1] to physical points x_quad_k in element k
@@ -402,18 +405,28 @@ def calculate_l2_error_lagrangeP1(u_nodal_final_flat, f_initial_func, L, n, c, T
         # Evaluate DG solution u_h at reference quadrature points within element k
         u_left_node = nodal_vals_element_wise[k, 0]
         u_right_node = nodal_vals_element_wise[k, 1]
-        u_h_at_quad_ref = u_left_node * L1(xi_quad) + u_right_node * L2(xi_quad)
+        # Vectorized evaluation within the element
+        u_h_at_quad_ref = u_left_node * L1_at_quad + u_right_node * L2_at_quad
 
         # Evaluate exact solution u_ex at physical quadrature points
         u_ex_at_quad_k = u_exact_final_func(x_quad_k)
+
+        # Check for NaNs in either solution at quad points before squaring
+        valid_points = np.isfinite(u_h_at_quad_ref) & np.isfinite(u_ex_at_quad_k)
+        if not np.all(valid_points):
+            print(f"Warning: NaN/Inf encountered during L2 error integrand calculation in element {k}.")
+            # Option 1: Skip element (might bias results)
+            # continue
+            # Option 2: Integrate only over valid points (potentially complex)
+            # Option 3: Return NaN for the whole error (safest)
+            return np.nan
 
         # Calculate squared error at quadrature points
         error_sq_at_quad = (u_h_at_quad_ref - u_ex_at_quad_k)**2
 
         # Add contribution from element k to the total L2 error squared integral
-        # Integral over element k = Integral over [-1,1] of integrand * jacobian dxi
-        # Approximate using quadrature: Sum( w_i * integrand(xi_i) ) * jacobian
-        l2_error_sq_sum += np.sum(w_quad * error_sq_at_quad) * jacobian
+        # Use dot product for weighted sum: sum(w_i * error_sq_i)
+        l2_error_sq_sum += np.dot(w_quad, error_sq_at_quad) * jacobian
 
     # Final check before sqrt
     if l2_error_sq_sum < -1e-14 or not np.isfinite(l2_error_sq_sum): # Allow for small negative values due to FP errors
@@ -437,8 +450,13 @@ def plot_function_lagrange(u_nodal_history_flat, L, n, dt, m, c, f_initial_func,
         save: Boolean, whether to save the animation.
         tend: Final time (used for labels).
     Returns:
-        Matplotlib animation object (or None if saving fails).
+        Matplotlib animation object (or None if saving fails/no valid frames).
     """
+    # Add explicit check for input type
+    if not isinstance(u_nodal_history_flat, np.ndarray):
+         print(f"Error: Input u_nodal_history_flat is not a NumPy array (type: {type(u_nodal_history_flat)}). Cannot animate.")
+         return None
+
     p_equiv = 1 # P1
     N_dof = n * (p_equiv + 1)
     n_plot_eval_per_elem = 10 # Points per element for smooth plotting
@@ -446,6 +464,11 @@ def plot_function_lagrange(u_nodal_history_flat, L, n, dt, m, c, f_initial_func,
 
     # Check if history contains NaNs
     first_nan_step_index = m + 1 # Assume all steps are valid initially
+    # Check shape before checking for NaNs
+    if u_nodal_history_flat.shape != (m + 1, N_dof):
+        print(f"Warning: u_nodal_history_flat has unexpected shape {u_nodal_history_flat.shape}. Expected ({m+1}, {N_dof}).")
+        # Attempt to proceed, but might fail later
+
     nan_indices = np.where(np.isnan(u_nodal_history_flat))
     if len(nan_indices[0]) > 0:
         first_nan_step_index = np.min(nan_indices[0])
@@ -466,14 +489,26 @@ def plot_function_lagrange(u_nodal_history_flat, L, n, dt, m, c, f_initial_func,
     # Reconstruct solution u(x,t) up to m_plot
     print("Reconstructing solution for animation...")
     v_plot = np.zeros((num_frames_to_show, len(x_plot_full)))
+    reconstruction_failed = False
     for time_idx in tqdm(range(num_frames_to_show), desc="Reconstructing Frames"):
          nodal_vals_flat_at_time = u_nodal_history_flat[time_idx, :]
-         # Ensure evaluate function can handle potential NaNs from reconstruction itself
-         v_plot[time_idx, :] = evaluate_dg_solution_lagrangeP1(x_plot_full, nodal_vals_flat_at_time, L, n)
+         try:
+             # Use vectorized evaluation
+             v_plot[time_idx, :] = evaluate_dg_solution_lagrangeP1(x_plot_full, nodal_vals_flat_at_time, L, n)
+         except Exception as e_eval:
+             print(f"\nError during solution evaluation for animation frame {time_idx}: {e_eval}")
+             # Set frame to NaN and flag failure
+             v_plot[time_idx, :] = np.nan
+             reconstruction_failed = True
+
+         # Check for NaNs introduced by evaluation (e.g., from NaN nodal values)
          if not np.all(np.isfinite(v_plot[time_idx, :])):
-              print(f"Warning: NaN encountered during solution reconstruction at frame {time_idx}.")
-              # Option: stop reconstruction, or let animation show NaNs
-              # Let it continue for now, animation might show gaps/errors
+              # Warning now comes from evaluate_dg_solution_lagrangeP1 or catch above
+              reconstruction_failed = True # Mark failure but continue
+
+    if reconstruction_failed:
+        print("Warning: Animation might show glitches due to NaNs or errors in reconstructed solution.")
+
 
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     fig.tight_layout(pad=3.0)
@@ -488,13 +523,38 @@ def plot_function_lagrange(u_nodal_history_flat, L, n, dt, m, c, f_initial_func,
     dg_line, = ax.plot([], [], color='g', lw=1.5, label=f'DG Solution (Lagrange P1, n={n}, RK44)')
     exact_func_t = lambda x, t: u_exact(x, t, L, c, f_initial_func)
     exact, = ax.plot([], [], color='r', alpha=0.7, lw=3, zorder=0, label='Exact')
-    initial_exact_y = exact_func_t(x_plot_full, 0)
 
-    # Determine plot limits based on initial condition and potentially history max/min
-    ymin = np.nanmin(v_plot) if num_frames_to_show > 0 else np.min(initial_exact_y)
-    ymax = np.nanmax(v_plot) if num_frames_to_show > 0 else np.max(initial_exact_y)
+    # Robust calculation of initial exact solution
+    try:
+        initial_exact_y = exact_func_t(x_plot_full, 0)
+        if not np.all(np.isfinite(initial_exact_y)):
+            print("Warning: Initial exact solution contains NaNs/Infs.")
+    except Exception as e:
+        print(f"Error calculating initial exact solution: {e}")
+        initial_exact_y = np.zeros_like(x_plot_full) # Fallback
+
+
+    # Determine plot limits based on valid initial/reconstructed data
+    valid_v_plot = v_plot[:num_frames_to_show] # Only consider valid frames
+    valid_v_plot_flat = valid_v_plot[np.isfinite(valid_v_plot)]
+    valid_initial_exact_y = initial_exact_y[np.isfinite(initial_exact_y)]
+
+    if len(valid_initial_exact_y) == 0 and len(valid_v_plot_flat) == 0:
+        print("Warning: Cannot determine plot limits, all data is NaN/Inf.")
+        ymin, ymax = -1.2, 1.2 # Fallback limits
+    else:
+        ymin = np.min(valid_initial_exact_y) if len(valid_initial_exact_y)>0 else np.inf
+        ymax = np.max(valid_initial_exact_y) if len(valid_initial_exact_y)>0 else -np.inf
+        if len(valid_v_plot_flat) > 0:
+             # Use nanmin/nanmax in case reconstruction failed partially
+             ymin = min(ymin, np.nanmin(valid_v_plot_flat))
+             ymax = max(ymax, np.nanmax(valid_v_plot_flat))
+
     yrange = ymax - ymin
-    if abs(yrange) < 1e-6: yrange = 1.0 # Avoid zero range
+    if abs(yrange) < 1e-6 or not np.isfinite(yrange):
+        yrange = 1.0 # Avoid zero/NaN range
+        ymin = -0.5 # Reset if range was invalid
+        ymax = 0.5
     ax.set_ylim(ymin - 0.15 * yrange, ymax + 0.15 * yrange)
     ax.set_xlim(0, L)
     ax.set_xlabel(r"$x$", fontsize=ftSz2)
@@ -514,8 +574,15 @@ def plot_function_lagrange(u_nodal_history_flat, L, n, dt, m, c, f_initial_func,
         # t_idx corresponds to the frame number, which is the time step index
         if t_idx < num_frames_to_show:
              current_time = t_idx * dt
+             # Plotting reconstructed data, which might contain NaNs if flagged
              dg_line.set_data(x_plot_full, v_plot[t_idx, :])
-             exact.set_ydata(exact_func_t(x_plot_full, current_time))
+             try: # Recalculate exact solution safely
+                  exact_y_data = exact_func_t(x_plot_full, current_time)
+                  exact.set_ydata(exact_y_data)
+             except Exception as e_exact:
+                  print(f"Error updating exact solution at t={current_time}: {e_exact}")
+                  exact.set_ydata(np.full_like(x_plot_full, np.nan)) # Show error as NaN
+
              time_text.set_text(time_template.format(current_time))
         # No else needed, FuncAnimation should stop after num_frames_to_show
         return tuple([dg_line, exact, time_text])
@@ -524,8 +591,16 @@ def plot_function_lagrange(u_nodal_history_flat, L, n, dt, m, c, f_initial_func,
     interval = max(1, int(1000.0 / fps)) # milliseconds per frame
 
     print("Creating animation...")
-    anim = FuncAnimation(fig, animate, frames=num_frames_to_show, interval=interval, blit=False,
-                         init_func=init, repeat=False)
+    # Add try-except around FuncAnimation creation itself
+    try:
+        anim = FuncAnimation(fig, animate, frames=num_frames_to_show, interval=interval, blit=False,
+                             init_func=init, repeat=False)
+    except Exception as e_anim_create:
+         print(f"\n--- Error Creating Animation Object ---")
+         print(f"Error: {e_anim_create}")
+         print("-------------------------------------\n")
+         plt.close(fig) # Close the figure if animation fails
+         return None
 
     if save:
         output_dir = './figures'
@@ -534,32 +609,51 @@ def plot_function_lagrange(u_nodal_history_flat, L, n, dt, m, c, f_initial_func,
         anim_filename = os.path.join(output_dir, f"dg_advection_p1lagrange_{ic_name_str}_n{n}_RK44.mp4")
         print(f"Saving animation to {anim_filename}...")
         try:
-            # Check if FFmpegWriter is available
+            # Check if FFmpegWriter is available more robustly
+            writer_path = None
             try:
-                plt.rcParams['animation.ffmpeg_path'] = FFMpegWriter().bin_path() # Auto-detect
-            except FileNotFoundError:
-                 print("\n--- FFmpeg Not Found ---")
-                 print("Attempting to save animation, but FFmpeg writer might not be configured.")
-                 print("Install FFmpeg or ensure its location is in your system's PATH.")
-                 print("------------------------\n")
-                 # Fallback or just let it try and fail below
+                 writer_path = plt.rcParams['animation.ffmpeg_path']
+                 if writer_path == 'ffmpeg':
+                     if shutil.which('ffmpeg') is None: writer_path = None
+            except KeyError:
+                 if shutil.which('ffmpeg') is not None: writer_path = 'ffmpeg'
+                 else: writer_path = None
+
+            if writer_path is None:
+                print("\n--- FFmpeg Not Found ---")
+                print("Cannot save animation. FFmpeg writer not configured.")
+                print("Install FFmpeg and ensure it's in PATH or set rcParam.")
+                print("------------------------\n")
+                raise RuntimeError("FFmpeg not found, cannot save animation.")
 
             writerMP4 = FFMpegWriter(fps=fps)
             anim.save(anim_filename, writer=writerMP4)
             print("Animation saved successfully.")
+            plt.close(fig) # Close plot after successful save
         except Exception as e:
-            print(f"\n--- Animation Save Error ---")
+            print(f"\n--- Animation Save/Show Error ---")
             print(f"Error: {e}")
-            print("Saving animation failed. Ensure FFmpeg is installed and accessible.")
-            print("Showing interactive plot instead.")
+            print("Showing interactive plot instead (if possible).")
             print("----------------------------\n")
-            plt.show() # Show interactively if saving fails
+            try:
+                plt.show() # Show interactively if saving fails
+                plt.close(fig) # Close after showing
+            except Exception as e_show:
+                print(f"Error showing plot interactively: {e_show}")
             return None # Indicate saving failed
     else:
-        plt.show() # Show interactively if not saving
+        # Add try-except around plt.show() as well
+        try:
+            plt.show() # Show interactively if not saving
+            plt.close(fig) # Close after showing
+        except Exception as e_show:
+             print(f"\n--- Interactive Plot Error ---")
+             print(f"Error: {e_show}")
+             print("------------------------------\n")
+             # Ensure figure is closed even if show fails
+             plt.close(fig)
+             return None # Indicate failure to show
 
-    # Close the plot window after saving/showing to prevent it lingering
-    plt.close(fig)
     return anim
 
 
@@ -650,12 +744,13 @@ def advection1d_lagrangeP1_solver(L, n, dt, m, c, f_initial_func, alpha, rktype=
         return None, np.nan, None # Return failure indication
 
     # Check for NaNs in the final state specifically
-    u_final_flat = u_history_flat[m].copy() # Get final state
+    # Use m as index for final state (since history has size m+1)
+    u_final_flat = u_history_flat[m].copy()
     simulation_succeeded = np.all(np.isfinite(u_final_flat))
 
     if not simulation_succeeded:
         print(f"\n--- Simulation failed (NaN/Inf detected in final state) for n={n} ---")
-        # Still try to plot/animate up to failure point if requested
+        # Still try to plot/animate up to failure point
     else:
         print(f"\n--- Simulation completed successfully for n={n} ---")
 
@@ -663,49 +758,93 @@ def advection1d_lagrangeP1_solver(L, n, dt, m, c, f_initial_func, alpha, rktype=
     # --- Post-processing ---
     animation_object = None
     if anim:
+        print("\nAttempting to generate animation...")
         # Pass the full history, plot_function_lagrange handles NaNs internally
-        animation_object = plot_function_lagrange(
-            u_history_flat, L=L, n=n, dt=dt, m=m, c=c,
-            f_initial_func=f_initial_func, save=save, tend=tend)
+        # Add try-except around the call itself
+        try:
+            animation_object = plot_function_lagrange(
+                u_history_flat, L=L, n=n, dt=dt, m=m, c=c,
+                f_initial_func=f_initial_func, save=save, tend=tend)
+            if animation_object is None and save:
+                 print("Animation saving/showing failed.")
+            elif animation_object is None and not save:
+                 print("Animation showing failed.")
+
+        except Exception as e_plot:
+            print(f"\n--- Error during animation/plotting call for n={n} ---")
+            print(f"Error: {e_plot}")
+            import traceback
+            traceback.print_exc()
+            print("------------------------------------------------------\n")
+            animation_object = None # Ensure it's None
+
 
     # Plot final comparison only if simulation succeeded and animation was off
     if plot_final and not anim and simulation_succeeded:
         print("\nPlotting final solution comparison...")
         n_plot_points_per_element = 50 # Fine resolution for plotting
         x_plot = np.linspace(0, L, n * n_plot_points_per_element + 1)
-        u_h_final_lagrange = evaluate_dg_solution_lagrangeP1(x_plot, u_final_flat, L, n)
-        u_ex_final = u_exact(x_plot, tend, L, c, f_initial_func)
+        try:
+            u_h_final_lagrange = evaluate_dg_solution_lagrangeP1(x_plot, u_final_flat, L, n)
+            u_ex_final = u_exact(x_plot, tend, L, c, f_initial_func)
 
-        # Check if evaluation resulted in NaNs (shouldn't if u_final_flat is finite)
-        if not np.all(np.isfinite(u_h_final_lagrange)):
-             print("Warning: Evaluation of final DG solution resulted in NaNs.")
+            # Check if evaluation resulted in NaNs
+            if not np.all(np.isfinite(u_h_final_lagrange)):
+                 print("Warning: Evaluation of final DG solution resulted in NaNs.")
+            if not np.all(np.isfinite(u_ex_final)):
+                 print("Warning: Evaluation of final Exact solution resulted in NaNs.")
 
-        plt.figure(figsize=(10, 6))
-        plt.plot(x_plot, u_ex_final, 'r-', linewidth=3, alpha=0.7, label=f'Exact Solution at T={tend:.2f}')
-        plt.plot(x_plot, u_h_final_lagrange, 'g-', linewidth=1.5, label=f'DG Solution (Lagrange P1, n={n}, RK44)')
-        # Add element boundaries
-        for k_elem in range(n + 1): plt.axvline(k_elem * L / n, color='gray', linestyle=':', linewidth=0.5)
 
-        # Use global font sizes
-        plt.xlabel("x", fontsize=ftSz2)
-        plt.ylabel(f"u(x, T={tend:.1f})", fontsize=ftSz2)
-        ic_name = f_initial_func.__name__.replace('ic_','')
-        plt.title(f"DG Lagrange P1 vs Exact at T={tend:.2f} (IC: {ic_name}, n={n})", fontsize=ftSz1)
-        plt.legend(fontsize=ftSz3)
-        plt.grid(True, linestyle=':')
-        # Calculate reasonable Y limits
-        ymin = min(np.nanmin(u_ex_final), np.nanmin(u_h_final_lagrange)) - 0.2
-        ymax = max(np.nanmax(u_ex_final), np.nanmax(u_h_final_lagrange)) + 0.2
-        if abs(ymax - ymin) < 1e-6: ymax = ymin + 1.0 # Handle constant solutions
-        plt.ylim(ymin, ymax)
-        plt.show()
-        plt.close() # Close the plot window
+            plt.figure(figsize=(10, 6))
+            plt.plot(x_plot, u_ex_final, 'r-', linewidth=3, alpha=0.7, label=f'Exact Solution at T={tend:.2f}')
+            plt.plot(x_plot, u_h_final_lagrange, 'g-', linewidth=1.5, label=f'DG Solution (Lagrange P1, n={n}, RK44)')
+            # Add element boundaries
+            for k_elem in range(n + 1): plt.axvline(k_elem * L / n, color='gray', linestyle=':', linewidth=0.5)
+
+            # Use global font sizes
+            plt.xlabel("x", fontsize=ftSz2)
+            plt.ylabel(f"u(x, T={tend:.1f})", fontsize=ftSz2)
+            ic_name = f_initial_func.__name__.replace('ic_','')
+            plt.title(f"DG Lagrange P1 vs Exact at T={tend:.2f} (IC: {ic_name}, n={n})", fontsize=ftSz1)
+            plt.legend(fontsize=ftSz3)
+            plt.grid(True, linestyle=':')
+            # Calculate reasonable Y limits
+            # Handle potential NaNs in evaluation
+            valid_uh = u_h_final_lagrange[np.isfinite(u_h_final_lagrange)]
+            valid_uex = u_ex_final[np.isfinite(u_ex_final)]
+            ymin = -1.2 # Default fallback
+            ymax = 1.2
+            if len(valid_uh)>0 and len(valid_uex)>0:
+                ymin = min(np.min(valid_uex), np.min(valid_uh)) - 0.2
+                ymax = max(np.max(valid_uex), np.max(valid_uh)) + 0.2
+            elif len(valid_uex)>0:
+                ymin = np.min(valid_uex) - 0.2
+                ymax = np.max(valid_uex) + 0.2
+            elif len(valid_uh)>0:
+                 ymin = np.min(valid_uh) - 0.2
+                 ymax = np.max(valid_uh) + 0.2
+
+            if abs(ymax - ymin) < 1e-6: ymax = ymin + 1.0 # Handle constant solutions
+            plt.ylim(ymin, ymax)
+            plt.show()
+            plt.close() # Close the plot window
+
+        except Exception as e_final_plot:
+             print(f"\n--- Error during final plot generation for n={n} ---")
+             print(f"Error: {e_final_plot}")
+             print("--------------------------------------------------\n")
 
 
     # Calculate L2 error at final time (only if simulation succeeded)
     l2_error = np.nan
     if simulation_succeeded:
-        l2_error = calculate_l2_error_lagrangeP1(u_final_flat, f_initial_func, L, n, c, tend)
+        try:
+            l2_error = calculate_l2_error_lagrangeP1(u_final_flat, f_initial_func, L, n, c, tend)
+        except Exception as e_l2:
+            print(f"\n--- Error during L2 error calculation for n={n} ---")
+            print(f"Error: {e_l2}")
+            print("------------------------------------------------\n")
+            l2_error = np.nan # Ensure it's NaN on error
     else:
         print(f"Skipping L2 error calculation for n={n} due to simulation failure.")
 
@@ -716,15 +855,17 @@ def advection1d_lagrangeP1_solver(L, n, dt, m, c, f_initial_func, alpha, rktype=
 
 
 # --- Convergence Study Function ---
+# CORRECTED plotting order and reporting asymptotic rate
 def run_convergence_study(L, c, T_final, f_initial_func, alpha_flux, rk_method, n_values, cfl_target=None, dt_fixed=None):
     """
     Performs a convergence study for the DG method using P1 Lagrange elements.
     Runs simulations for a list of element counts (n_values) and calculates
-    the L2 error against the exact solution. Plots error vs element size (h).
+    the L2 error against the exact solution. Plots error vs element size (h)
+    and prints a formatted results table, reporting the asymptotic rate.
 
     Args:
         L, c, T_final: Domain length, advection speed, final time.
-        f_initial_func: Function handle for the (smooth) initial condition.
+        f_initial_func: Function handle for the initial condition.
         alpha_flux: Upwind parameter for the spatial operator.
         rk_method: Time integration method (e.g., 'RK44').
         n_values: List or array of element counts [n1, n2, ...].
@@ -736,10 +877,13 @@ def run_convergence_study(L, c, T_final, f_initial_func, alpha_flux, rk_method, 
                and corresponding L2 errors. Includes NaNs for failed runs.
     """
     print("\n--- Starting Convergence Study ---")
+    is_discontinuous = 'square' in f_initial_func.__name__
     if not callable(f_initial_func):
         raise TypeError("f_initial_func must be a callable function.")
-    if 'square' in f_initial_func.__name__:
-        print("Warning: Using a discontinuous IC for convergence study. Results may not show expected theoretical rates.")
+    if is_discontinuous:
+        print(f"Warning: Using discontinuous IC '{f_initial_func.__name__}' for convergence study.")
+        print("         Observed rates may be lower than theoretical smooth rates (O(h^2))")
+        print("         and potentially less stable.")
 
     if cfl_target is None and dt_fixed is None:
         raise ValueError("Convergence study requires either cfl_target or dt_fixed to be specified.")
@@ -774,7 +918,6 @@ def run_convergence_study(L, c, T_final, f_initial_func, alpha_flux, rk_method, 
             if abs(c) > 1e-14: # Avoid division by zero if c is very small
                  dt_conv = cfl_target * dx_conv / abs(c)
             else: # Handle c=0 case (e.g., stationary solution)
-                 # Choose a reasonable dt, perhaps ensuring a fixed number of steps
                  num_steps_if_c_zero = 200 # Arbitrary choice
                  dt_conv = T_final / num_steps_if_c_zero
                  print(f"Warning: c=0, using fixed dt={dt_conv:.3e} ({num_steps_if_c_zero} steps).")
@@ -782,7 +925,8 @@ def run_convergence_study(L, c, T_final, f_initial_func, alpha_flux, rk_method, 
             if dt_conv <= 1e-15:
                  print(f"Warning: Calculated dt={dt_conv:.3e} too small for n={n_conv} based on CFL target. Skipping.")
                  l2_errors.append(np.nan)
-                 h_values[-1] = np.nan # Mark h as NaN too
+                 # Use index -1 to access the last added h_value
+                 h_values[-1] = np.nan # Mark corresponding h as NaN too
                  sim_success.append(False)
                  continue
 
@@ -815,7 +959,8 @@ def run_convergence_study(L, c, T_final, f_initial_func, alpha_flux, rk_method, 
             u_final_conv = u_history_conv[m_conv]
             l2_err_n = calculate_l2_error_lagrangeP1(u_final_conv, f_initial_func, L, n_conv, c, T_final)
             l2_errors.append(l2_err_n) # Appends NaN if error calc failed internally
-            sim_success.append(l2_err_n is not np.nan) # Mark success if error is valid number
+            # Update success flag based on whether L2 error calculation itself failed
+            sim_success.append(l2_err_n is not np.nan and np.isfinite(l2_err_n))
 
     # --- Process and Plot Convergence Results ---
     h_values = np.array(h_values)
@@ -825,10 +970,14 @@ def run_convergence_study(L, c, T_final, f_initial_func, alpha_flux, rk_method, 
     valid_mask = np.isfinite(h_values) & np.isfinite(l2_errors) & (l2_errors > 1e-15)
     h_valid = h_values[valid_mask]
     l2_errors_valid = l2_errors[valid_mask]
+    # Ensure n_values is treated as a numpy array for boolean indexing
     n_values_valid = np.array(n_values)[valid_mask] # Get corresponding n for valid points
 
 
     rates = []
+    n_sorted = np.array([]) # Initialize as empty array
+    h_sorted = np.array([])
+    l2_errors_sorted = np.array([])
     if len(h_valid) > 1:
         # Sort by h descending to calculate rates between successive refinements
         sort_indices = np.argsort(h_valid)[::-1] # Indices for h largest to smallest
@@ -837,66 +986,104 @@ def run_convergence_study(L, c, T_final, f_initial_func, alpha_flux, rk_method, 
         n_sorted = n_values_valid[sort_indices] # Keep track of n for printing
 
         # Estimate convergence rate: Order = log(E_coarse/E_fine) / log(h_coarse/h_fine)
-        log_errors = np.log(l2_errors_sorted)
-        log_h = np.log(h_sorted)
+        # Add small value to avoid log(0) issues, although filtered above
+        log_errors = np.log(l2_errors_sorted + 1e-30)
+        log_h = np.log(h_sorted + 1e-30)
 
         # Calculate rates comparing consecutive points in the sorted list
         rates = (log_errors[:-1] - log_errors[1:]) / (log_h[:-1] - log_h[1:])
 
-    print("\n--- Convergence Study Results ---")
+    # --- Print Results Table --- #
+    print("\n--- Convergence Study Results (Lagrange P1) ---")
     print("  n    |    h       |   L2 Error   | Approx. Rate")
     print("-------|------------|--------------|--------------")
 
-    # Print sorted results
     if len(h_valid) > 0:
-        # Print the first point (coarsest)
-        print(f"{n_sorted[0]:>6d} | {h_sorted[0]:.6f} | {l2_errors_sorted[0]:.6e} |     -    ")
+        # Print the first point (coarsest in the sorted list)
+        print(f"{n_sorted[0]:>6d} | {h_sorted[0]:<10.6f} | {l2_errors_sorted[0]:<12.6e} |     -    ")
         # Print subsequent points and the rate obtained refining from the previous
         for i in range(len(rates)):
-             print(f"{n_sorted[i+1]:>6d} | {h_sorted[i+1]:.6f} | {l2_errors_sorted[i+1]:.6e} |   {rates[i]:.3f}  ")
+             # Ensure index i+1 is valid for sorted arrays
+             if i + 1 < len(n_sorted):
+                 # Format rate, handle potential NaN/Inf
+                 rate_str = f"{rates[i]:<7.3f}" if np.isfinite(rates[i]) else "  N/A  "
+                 print(f"{n_sorted[i+1]:>6d} | {h_sorted[i+1]:<10.6f} | {l2_errors_sorted[i+1]:<12.6e} | {rate_str}")
+             else:
+                 print(f"Warning: Mismatch in array lengths during results table printing.")
     else:
-        print("No valid data points found for convergence analysis.")
-        # Print original data for debugging if needed
-        print("\nOriginal Data:")
+        # If no valid points, print message and original data if helpful
+        print("  No valid data points found for convergence analysis.")
+        print("\n  Original Data (for debugging):")
         for i in range(len(n_values)):
              n_orig = n_values[i]
-             h_orig = h_values[i] if i < len(h_values) else 'N/A'
-             err_orig = l2_errors[i] if i < len(l2_errors) else 'N/A'
-             print(f" n={n_orig}, h={h_orig}, L2={err_orig}, Success={sim_success[i] if i < len(sim_success) else 'N/A'}")
-
+             # Safely access h_values, l2_errors, sim_success with bounds check
+             h_orig_str = f"{h_values[i]:.6f}" if i < len(h_values) and np.isfinite(h_values[i]) else 'N/A'
+             err_orig_str = f"{l2_errors[i]:.6e}" if i < len(l2_errors) and np.isfinite(l2_errors[i]) else 'N/A'
+             success_str = str(sim_success[i]) if i < len(sim_success) else 'N/A'
+             print(f"    n={n_orig:<4d} | h={h_orig_str:<10s} | L2={err_orig_str:<12s} | Success={success_str}")
 
     print("---------------------------------")
+    # --- End Print Results Table --- #
+
+    # --- Report Asymptotic Rate (from finest grids) --- #
     if len(rates) > 0:
-        # Calculate average rate only from valid calculated rates
-        avg_rate = np.mean(rates[np.isfinite(rates)]) if np.any(np.isfinite(rates)) else np.nan
-        print(f"Average Observed Rate (where calculable): {avg_rate:.3f}")
+        asymptotic_rate = rates[-1] # Rate from the two finest grids
+        if np.isfinite(asymptotic_rate):
+            print(f"Asymptotic Observed Rate (finest grids): {asymptotic_rate:.3f}")
+        else:
+            print("Could not calculate a finite asymptotic rate (finest grids).")
     else:
         print("Could not calculate any convergence rates.")
-    print("(Expected rate for P1 elements is ~2.0 for smooth solutions)")
+
+    # Modify expected rate comment based on IC smoothness
+    p_basis = 1
+    expected_rate_smooth = p_basis + 1
+    if is_discontinuous:
+         print(f"(Note: Using discontinuous IC '{f_initial_func.__name__}'.")
+         print(f" Expected rate is typically < {expected_rate_smooth}. Often O(h^0.5) to O(h^1) in L2 norm.)")
+    else:
+         print(f"(Expected rate for P{p_basis} elements is ~{expected_rate_smooth:.1f} for smooth solutions)")
+
 
     # --- Plotting ---
     if len(h_valid) > 0:
         plt.figure(figsize=(8, 6))
-        # Plot the calculated L2 errors
-        plt.loglog(h_valid, l2_errors_valid, 'bo-', markerfacecolor='none', markersize=8, label='DG P1 L2 Error')
 
-        # Plot reference lines for expected order p+1 = 2
-        order_expected = 1 + 1 # p=1 basis
-        # Scale reference line to pass through the first valid point (or last, doesn't matter for slope)
-        # Use the finest point (smallest h) for scaling seems common
-        idx_finest = np.argmin(h_valid)
-        C_ref = l2_errors_valid[idx_finest] / (h_valid[idx_finest]**order_expected)
+        # **** CORRECTED PLOTTING ORDER ****
+        # Sort the valid data by h (ascending) for correct line connection
+        plot_sort_indices = np.argsort(h_valid)
+        h_plot_sorted = h_valid[plot_sort_indices]
+        l2_errors_plot_sorted = l2_errors_valid[plot_sort_indices]
+        # Plot the calculated L2 errors using sorted data
+        plt.loglog(h_plot_sorted, l2_errors_plot_sorted, 'bo-', markerfacecolor='none', markersize=8, label='DG P1 L2 Error')
+        # **** END CORRECTION ****
+
+        # Plot reference line for expected SMOOTH rate (O(h^2)), add others if needed
+        order_expected_smooth = p_basis + 1
+        # Scale reference line to pass through the point with smallest h
+        idx_finest = np.argmin(h_valid) # Index in the original valid arrays
+        C_ref_smooth = l2_errors_valid[idx_finest] / (h_valid[idx_finest]**order_expected_smooth)
         # Generate h values for plotting the reference line spanning the range of valid h
-        h_plot_ref = np.array([min(h_valid), max(h_valid)])
-        plt.loglog(h_plot_ref, C_ref * h_plot_ref**order_expected,
-                   'r--', label=f'$\\mathcal{{O}}(h^{order_expected})$ Reference')
+        h_plot_ref = np.array([min(h_valid), max(h_valid)]) # Use min/max for range
+        plt.loglog(h_plot_ref, C_ref_smooth * h_plot_ref**order_expected_smooth,
+                   'r--', label=f'$\\mathcal{{O}}(h^{order_expected_smooth})$ Ref (Smooth IC)')
+
+        # Optionally add a reference line for the expected discontinuous rate (e.g., O(h^1) or O(h^0.5))
+        if is_discontinuous:
+            # Let's check O(h^0.5) as that's theoretically common for L2 error with jumps
+            order_expected_disc = 0.5
+            C_ref_disc = l2_errors_valid[idx_finest] / (h_valid[idx_finest]**order_expected_disc)
+            plt.loglog(h_plot_ref, C_ref_disc * h_plot_ref**order_expected_disc,
+                       'm:', label=f'$\\mathcal{{O}}(h^{order_expected_disc:.1f})$ Ref (Example)')
+
 
         # Use global font sizes
         plt.xlabel("Element Size $h = L/n$", fontsize=ftSz2)
         plt.ylabel("$L_2$ Error at $T_{final}$", fontsize=ftSz2)
         ic_name = f_initial_func.__name__.replace('ic_', '')
         plt.title(f"DG P1 Lagrange Convergence (IC: {ic_name})", fontsize=ftSz1)
-        plt.gca().invert_xaxis() # Plot h decreasing from left to right (standard)
+        # Keep invert_xaxis(): plots h decreasing L->R (standard)
+        plt.gca().invert_xaxis()
         plt.grid(True, which='both', linestyle=':')
         plt.legend(fontsize=ftSz3)
         plt.show()
@@ -949,27 +1136,29 @@ def plot_comparison_n_lagrange(L, c, T_final, f_initial_func, alpha_flux, rk_met
     if not callable(f_initial_func):
         print("Error: Invalid initial condition function provided for comparison plot.")
         return
+    # Handle empty list case
     if not n_values_to_compare:
         print("Warning: No n values provided for comparison plot.")
         return
 
     # Define plotting parameters
     n_plot_points_per_element = 30 # Resolution for plotting DG solution
-    n_fine_plot_basis = max(n_values_to_compare) # Use finest n for base plot resolution
+    # Use finest n for base plot resolution, ensure at least some points
+    n_fine_plot_basis = max(max(n_values_to_compare), 10)
     x_plot = np.linspace(0, L, n_fine_plot_basis * n_plot_points_per_element + 1)
 
     # --- Calculate Exact Solution and Plot Limits FIRST ---
     try:
         u_ex_final = u_exact(x_plot, T_final, L, c, f_initial_func)
-        if not np.all(np.isfinite(u_ex_final)):
-             print("Warning: Exact solution contains non-finite values.")
-        ymin_plot = np.nanmin(u_ex_final) - 0.2
-        ymax_plot = np.nanmax(u_ex_final) + 0.2
+        valid_uex = u_ex_final[np.isfinite(u_ex_final)]
+        if len(valid_uex) == 0: raise ValueError("Exact solution is all NaN/Inf")
+        ymin_plot = np.min(valid_uex) - 0.2
+        ymax_plot = np.max(valid_uex) + 0.2
         if abs(ymax_plot - ymin_plot) < 1e-6: ymax_plot = ymin_plot + 1.0
     except Exception as e:
         print(f"Error calculating exact solution for plot: {e}")
         # Set default plot limits if exact solution fails
-        ymin_plot, ymax_plot = -1.2, 1.2
+        ymin_plot, ymax_plot = -1.2, 1.2 # Default fallback
 
     # --- Setup Plot ---
     plt.figure(figsize=(12, 7)) # Slightly wider for multiple lines
@@ -978,6 +1167,7 @@ def plot_comparison_n_lagrange(L, c, T_final, f_initial_func, alpha_flux, rk_met
     colors = plt.cm.viridis(np.linspace(0, 0.9, len(n_values_to_compare)))
 
     # --- Loop through n values, simulate, and plot ---
+    all_sims_failed = True # Track if any sim succeeds
     for i, n_comp in enumerate(n_values_to_compare):
         print(f"\nRunning for comparison plot: n={n_comp}")
         dx_comp = L / n_comp
@@ -996,7 +1186,7 @@ def plot_comparison_n_lagrange(L, c, T_final, f_initial_func, alpha_flux, rk_met
         m_comp = max(1, int(np.ceil(T_final / dt_comp)))
         dt_adjusted_comp = T_final / m_comp
 
-        if abs(c) > 1e-14: actual_cfl_comp = abs(c) * dt_adjusted_comp / dx_comp
+        if abs(c) > 1e-14 and dx_comp > 1e-14 : actual_cfl_comp = abs(c) * dt_adjusted_comp / dx_comp
         else: actual_cfl_comp = 0.0
 
         print(f"  dx={dx_comp:.3e}, dt={dt_adjusted_comp:.3e}, m={m_comp}, CFL={actual_cfl_comp:.3f}")
@@ -1012,17 +1202,28 @@ def plot_comparison_n_lagrange(L, c, T_final, f_initial_func, alpha_flux, rk_met
             plt.plot([],[], linestyle='-', color=colors[i], label=f'{label_n} - FAILED')
         else:
             # Simulation succeeded, evaluate final state
+            all_sims_failed = False # At least one sim worked
             u_final_flat_comp = u_history_comp[m_comp]
             u_h_final = evaluate_dg_solution_lagrangeP1(x_plot, u_final_flat_comp, L, n_comp)
 
             # Plot the evaluated DG solution
             if np.all(np.isfinite(u_h_final)):
                 plt.plot(x_plot, u_h_final, linestyle='-', color=colors[i], linewidth=1.5, label=label_n)
+                # Update plot limits if necessary based on this simulation's results
+                valid_uh = u_h_final[np.isfinite(u_h_final)]
+                if len(valid_uh)>0:
+                     current_min = np.min(valid_uh) - 0.2
+                     current_max = np.max(valid_uh) + 0.2
+                     ymin_plot = min(ymin_plot, current_min)
+                     ymax_plot = max(ymax_plot, current_max)
             else:
                 print(f"  Warning: Evaluation of DG solution for n={n_comp} resulted in NaN/Inf. Plotting skipped.")
                 plt.plot([],[], linestyle='-', color=colors[i], label=f'{label_n} - NaN Eval')
 
     # --- Finalize Plot ---
+    if all_sims_failed:
+        print("\nWarning: All simulations for the n-comparison plot failed.")
+
     # Use global font sizes ftSz1, ftSz2, ftSz3
     plt.xlabel("x", fontsize=ftSz2); plt.ylabel(f"u(x, T={T_final:.1f})", fontsize=ftSz2)
     ic_name = f_initial_func.__name__.replace('ic_','')
@@ -1030,7 +1231,10 @@ def plot_comparison_n_lagrange(L, c, T_final, f_initial_func, alpha_flux, rk_met
     # Adjust legend font size if many lines
     legend_fontsize = max(8, ftSz3 - (len(n_values_to_compare)//3))
     plt.legend(fontsize=legend_fontsize); plt.grid(True, linestyle=':')
-    plt.ylim(ymin_plot, ymax_plot); plt.xlim(0, L); plt.show()
+    # Adjust final Y limits in case DG solutions exceeded initial range
+    if abs(ymax_plot - ymin_plot) < 1e-6: ymax_plot = ymin_plot + 1.0
+    plt.ylim(ymin_plot, ymax_plot);
+    plt.xlim(0, L); plt.show()
     plt.close() # Close the plot
 
 
@@ -1052,33 +1256,17 @@ if __name__ == "__main__":
     upwind_param = 1.0 # Use 1.0 for upwind flux based on sign(c)
 
     # --- Plot P1 Lagrange Basis Functions (Runs Once) ---
+    # (Code unchanged)
     print("Plotting P1 Lagrange Basis Functions...")
-    xi_plot_basis = np.linspace(-1, 1, 200) # Reference coordinate range
-    L1_vals = L1(xi_plot_basis)
-    L2_vals = L2(xi_plot_basis)
-
+    xi_plot_basis = np.linspace(-1, 1, 200); L1_vals = L1(xi_plot_basis); L2_vals = L2(xi_plot_basis)
     plt.figure(figsize=(10, 6))
     plt.plot(xi_plot_basis, L1_vals, 'b-', lw=2, label=r'$L_1(\xi) = \phi_{k,1} = (1 - \xi)/2$ (Node k)')
     plt.plot(xi_plot_basis, L2_vals, 'g-', lw=2, label=r'$L_2(\xi) = \phi_{k,2} = (1 + \xi)/2$ (Node k+1)')
-
-    # Add markers at nodes to clarify their values
-    plt.plot([-1], [1], 'bo', markersize=8, markerfacecolor='b') # L1=1 at xi=-1
-    plt.plot([1], [0], 'bo', markersize=8, markerfacecolor='w', markeredgecolor='b') # L1=0 at xi=+1
-    plt.plot([-1], [0], 'go', markersize=8, markerfacecolor='w', markeredgecolor='g') # L2=0 at xi=-1
-    plt.plot([1], [1], 'go', markersize=8, markerfacecolor='g') # L2=1 at xi=+1
-
-    plt.title("P1 Lagrange Shape Functions on Reference Element [-1, 1]", fontsize=ftSz1)
-    plt.xlabel("Reference Coordinate $\\xi$", fontsize=ftSz2)
-    plt.ylabel("Shape Function Value", fontsize=ftSz2)
-    plt.xticks(np.linspace(-1, 1, 9)) # More ticks
-    plt.yticks(np.linspace(0, 1, 6))
-    plt.grid(True, linestyle=':')
-    plt.axhline(0, color='black', linewidth=0.5)
-    plt.axvline(0, color='black', linewidth=0.5)
-    plt.legend(fontsize=ftSz3)
-    plt.ylim(-0.1, 1.1)
-    plt.show()
-    plt.close() # Close the plot window
+    plt.plot([-1], [1], 'bo', markersize=8, markerfacecolor='b'); plt.plot([1], [0], 'bo', markersize=8, markerfacecolor='w', markeredgecolor='b')
+    plt.plot([-1], [0], 'go', markersize=8, markerfacecolor='w', markeredgecolor='g'); plt.plot([1], [1], 'go', markersize=8, markerfacecolor='g')
+    plt.title("P1 Lagrange Shape Functions on Reference Element [-1, 1]", fontsize=ftSz1); plt.xlabel("Reference Coordinate $\\xi$", fontsize=ftSz2); plt.ylabel("Shape Function Value", fontsize=ftSz2)
+    plt.xticks(np.linspace(-1, 1, 9)); plt.yticks(np.linspace(0, 1, 6)); plt.grid(True, linestyle=':'); plt.axhline(0, color='black', linewidth=0.5); plt.axvline(0, color='black', linewidth=0.5)
+    plt.legend(fontsize=ftSz3); plt.ylim(-0.1, 1.1); plt.show(); plt.close()
     # --- End Plot Basis Functions ---
 
 
@@ -1087,8 +1275,9 @@ if __name__ == "__main__":
     initial_condition_name = '' # Define outside the if block
     if run_normal_simulation:
         n_sim = 40 # Number of elements for the detailed run
-        initial_condition_name = 'sine' # Options: 'sine' or 'square'
-        cfl_target_sim = 0.2 # CFL target for this run (can be less strict than convergence)
+        # **** Use SQUARE WAVE for normal sim ****
+        initial_condition_name = 'square' # Options: 'sine' or 'square'
+        cfl_target_sim = 0.2 # CFL target for this run
         animate_sim = True   # Generate animation?
         save_anim = False    # Save animation file? (Requires FFmpeg)
         plot_final_sim = True # Plot final state comparison if animation is off?
@@ -1141,14 +1330,15 @@ if __name__ == "__main__":
 
     # --- Configuration and Run Convergence Study ---
     if run_conv_study:
-        f_initial_conv = ic_sine_wave # MUST use smooth IC for theoretical rates
+        # **** Use SQUARE WAVE for convergence study ****
+        f_initial_conv = ic_square_wave
         # Example n values for convergence study
         n_values_conv = [5, 10, 20, 40, 80, 160]
         # Use a MORE CONSERVATIVE CFL for study to minimize stability/temporal error issues
         cfl_target_conv = 0.05 # Reduced CFL for convergence study accuracy
 
         print(f"\nConfiguring Convergence Study (IC: {f_initial_conv.__name__}, CFL: {cfl_target_conv})")
-        # Run the study
+        # Run the study - function now handles asymptotic rate reporting and correct plotting
         h_conv, errors_conv = run_convergence_study(
             L_, c_, T_final, f_initial_conv, upwind_param, rk_method,
             n_values=n_values_conv,
@@ -1160,20 +1350,21 @@ if __name__ == "__main__":
     # --- Configuration and Run n-Comparison Plot ---
     if run_n_comparison_plot:
         # Choose the IC for the comparison plot
-        # Try to use the IC from the normal simulation if it ran and was valid
-        if f_initial_sim is not None and callable(f_initial_sim):
+        # **** Use SQUARE WAVE for comparison plot ****
+        # Check if normal sim ran with square wave, otherwise default to square wave
+        if f_initial_sim is not None and callable(f_initial_sim) and initial_condition_name == 'square':
             f_initial_comp = f_initial_sim
             ic_name_comp = initial_condition_name # Get name from normal sim run
             print(f"\nUsing IC '{ic_name_comp}' from normal simulation for n-comparison plot.")
         else:
-            # Fallback if normal sim didn't run or IC was invalid
-            f_initial_comp = ic_sine_wave # Default to sine wave
-            ic_name_comp = 'sine_wave'
-            print(f"\nNormal simulation IC not available or invalid, using default '{ic_name_comp}' for n-comparison plot.")
+            # Fallback if normal sim didn't run or IC was different
+            f_initial_comp = ic_square_wave # Default to square wave
+            ic_name_comp = 'square_wave'
+            print(f"\nUsing default IC '{ic_name_comp}' for n-comparison plot.")
 
         # Choose n values and CFL for the comparison plot
         n_values_comp = [5, 10, 20, 40] # Which n values to plot together
-        cfl_target_comp = 0.1 # Use a reasonable CFL target (can differ from sim/conv study)
+        cfl_target_comp = 0.1 # Use a reasonable CFL target
 
         print(f"\nConfiguring n-Comparison Plot (IC: {ic_name_comp}, CFL: {cfl_target_comp})")
         # Call the comparison plot function
