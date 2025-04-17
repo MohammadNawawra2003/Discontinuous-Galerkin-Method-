@@ -85,7 +85,7 @@ DG P1 Legendre vs Exact IC square wave:
 
 
 DG Legendre P1 Convergence IC ic square wave
-![DG Legendre P1 Convergence IC ic square wave](https://github.com/user-attachments/assets/fed61e24-de9d-40a4-961f-f612446a3fa2)
+![DG Legendre P1 Convergence IC square wave](https://github.com/user-attachments/assets/7825a3b3-4b7d-49c2-ac11-e977ab81d487)
 
 
 Comparison of DG Legendre P1 Solutions for Different n:
