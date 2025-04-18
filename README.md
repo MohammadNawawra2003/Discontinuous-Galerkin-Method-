@@ -1,4 +1,4 @@
-Lagrange code results:
+Space only Lagrange code results:
 
 Pl Lagrange Shape Functions on Reference Element [-1, 1]:
 ![Pl Lagrange Shape Functions on Reference Element  -1, 1](https://github.com/user-attachments/assets/1b75325c-def7-4cfd-8929-55aa7f301dc8)
@@ -53,7 +53,7 @@ Using IC 'square' from normal simulation for n-comparison plot.
 
 
 
-Legendre code results:
+Space only Legendre code results:
 
 Legendre Basis Functions p=0..1 on Ref Element [-1, 1]:
 ![Legendre Basis Functions p=0 1 on Ref Element  -1, 1](https://github.com/user-attachments/assets/eac464ce-5b22-43f5-bf19-c819f7a3b985)
