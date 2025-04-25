@@ -123,7 +123,7 @@ Numerical Solution u(x,t) Surface (Space-Time DG, P=1):
 ---------------------------------
 (Expected rate for P1 is ~2.0 for smooth solutions)
 
-
+--------------------
 
 Discontinuous Galerkin Method
 --------------------
