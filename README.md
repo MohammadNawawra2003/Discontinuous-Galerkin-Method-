@@ -109,6 +109,10 @@ Discontinuous Galerkin Method (Space-Time)
 Simulation of STDG Solution for P=1:
 ![advection_stdg_p1](https://github.com/user-attachments/assets/5b9beeae-9a86-4bd9-8772-9db4d4ef0a75)
 
+Convergence Plot (L2 Error at T=1.0, P=1):
+![Convergence Plot (L2 Error at T=1 0, P=1)](https://github.com/user-attachments/assets/6ac5f447-0d8d-4a35-af1a-9da55d72e26b)
+
+
 Numerical Solution u(x,t) Surface (Space-Time DG, P=1):
 ![Numerical Solution u(x,t) Surface (Space-Time DG, P=1)](https://github.com/user-attachments/assets/ef5797a9-a791-4876-8f9b-4b42e25065cd)
 
