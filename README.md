@@ -112,6 +112,9 @@ Simulation of STDG Solution for P=1:
 Convergence Plot (L2 Error at T=1.0, P=1):
 ![Convergence Plot (L2 Error at T=1 0, P=1)](https://github.com/user-attachments/assets/6ac5f447-0d8d-4a35-af1a-9da55d72e26b)
 
+Comparison of Numerical Solutions at t =1.0000 (P=1):
+![Comparison of Numerical Solutions at t =1 with P=1](https://github.com/user-attachments/assets/20bdf51a-0da0-447c-8881-c50251114bfd)
+
 
 Numerical Solution u(x,t) Surface (Space-Time DG, P=1):
 ![Numerical Solution u(x,t) Surface (Space-Time DG, P=1)](https://github.com/user-attachments/assets/ef5797a9-a791-4876-8f9b-4b42e25065cd)
