@@ -112,16 +112,13 @@ Simulation of STDG Solution for P=1:
 Numerical Solution u(x,t) Surface (Space-Time DG, P=1):
 ![Numerical Solution u(x,t) Surface (Space-Time DG, P=1)](https://github.com/user-attachments/assets/ef5797a9-a791-4876-8f9b-4b42e25065cd)
 
-
---- Convergence Table (P=1 fixed) ---
-   Nx        h          L2 Error     Approx Rate
+  n    |    h       |   L2 Error   | Approx. Rate
 -------|------------|--------------|--------------
    10  | 1.0000e-01 | 2.288621e-02 |     -
    20  | 5.0000e-02 | 4.698625e-03 |   2.2842
    40  | 2.5000e-02 | 1.092036e-03 |   2.1052
    80  | 1.2500e-02 | 2.673834e-04 |   2.0300
 ---------------------------------
-(Expected rate for P1 is ~2.0 for smooth solutions)
 
 --------------------
 
