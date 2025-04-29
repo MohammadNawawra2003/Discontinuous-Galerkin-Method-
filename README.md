@@ -2,6 +2,9 @@ Discontinuous Galerkin Method (Space only)
 --------------------
 Space only Lagrange code results:
 
+DG P1 Lagrange Solution uh(x, t) Surface Plot IC sine wave, n=40:
+![DG P1 Lagrange Solution uh(x, t) Surface Plot IC sine wave, n=40](https://github.com/user-attachments/assets/c902536b-58f5-4b07-b30d-4650c31e206a)
+
 Pl Lagrange Shape Functions on Reference Element [-1, 1]:
 ![Pl Lagrange Shape Functions on Reference Element  -1, 1](https://github.com/user-attachments/assets/1b75325c-def7-4cfd-8929-55aa7f301dc8)
 
