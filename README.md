@@ -132,7 +132,7 @@ Numerical Solution u(x,t) Surface (Space-Time DG, P=1):
 
 --------------------
 The full sysyem equation in Matrix form:
-<pre> ```latex \[ \textbf{The Full System Equation in Matrix Form:} \] Putting it all together, the semi-discrete system \[ M \frac{dU}{dt} = R(U) \] is: \[ \left( \frac{\Delta x}{6} \right) \begin{pmatrix} \begin{pmatrix} 2 & 1 \\ 1 & 2 \end{pmatrix} & & & & 0 \\ & \begin{pmatrix} 2 & 1 \\ 1 & 2 \end{pmatrix} & & & \\ & & \ddots & & \\ & & & \begin{pmatrix} 2 & 1 \\ 1 & 2 \end{pmatrix} & \\ 0 & & & & \begin{pmatrix} 2 & 1 \\ 1 & 2 \end{pmatrix} \end{pmatrix} \begin{pmatrix} u'_{0,1} \\ u'_{0,2} \\ u'_{1,1} \\ u'_{1,2} \\ \vdots \\ u'_{n-1,1} \\ u'_{n-1,2} \end{pmatrix} = \begin{pmatrix} R_0(U) \\ R_1(U) \\ \vdots \\ R_{n-1}(U) \end{pmatrix} \] ``` </pre>
+
 
 Discontinuous Galerkin Method
 --------------------
