@@ -132,11 +132,13 @@ Numerical Solution u(x,t) Surface (Space-Time DG, P=1):
 
 --------------------
 The full semi-descrete sysyem equation in matrix form:
+
 ![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20%7B%5Ccolor%7Bwhite%7D%20%5Cfrac%7B%5CDelta%20x%7D%7B6%7D%0A%5Cbegin%7Bpmatrix%7D%0A%5Cbegin%7Bpmatrix%7D%202%20%26%201%20%5C%5C%201%20%26%202%20%5Cend%7Bpmatrix%7D%20%26%200%20%26%20%5Cdots%20%26%200%20%5C%5C%0A0%20%26%20%5Cbegin%7Bpmatrix%7D%202%20%26%201%20%5C%5C%201%20%26%202%20%5Cend%7Bpmatrix%7D%20%26%20%5Cdots%20%26%200%20%5C%5C%0A%5Cvdots%20%26%20%5Cvdots%20%26%20%5Cddots%20%26%20%5Cvdots%20%5C%5C%0A0%20%26%200%20%26%20%5Cdots%20%26%20%5Cbegin%7Bpmatrix%7D%202%20%26%201%20%5C%5C%201%20%26%202%20%5Cend%7Bpmatrix%7D%0A%5Cend%7Bpmatrix%7D%0A%5Cbegin%7Bpmatrix%7D%0Au%27_%7B0%2C1%7D%20%5C%5C%20u%27_%7B0%2C2%7D%20%5C%5C%0Au%27_%7B1%2C1%7D%20%5C%5C%20u%27_%7B1%2C2%7D%20%5C%5C%0A%5Cvdots%20%5C%5C%0Au%27_%7Bn-1%2C1%7D%20%5C%5C%20u%27_%7Bn-1%2C2%7D%0A%5Cend%7Bpmatrix%7D%0A%3D%0A%5Cbegin%7Bpmatrix%7D%0AR_0(U)%20%5C%5C%0AR_1(U)%20%5C%5C%0A%5Cvdots%20%5C%5C%0AR_%7Bn-1%7D(U)%0A%5Cend%7Bpmatrix%7D})
 
 
 The Local RHS Vector for Element 
 k (for c> 0, α=1.0):
+
 ![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20%7B%5Ccolor%7Bwhite%7D%20R_k(U)%20%3D%20c%20%5Cbegin%7Bpmatrix%7D%20-0.5(u_%7Bk%2C1%7D%20%2B%20u_%7Bk%2C2%7D)%20%2B%20u_%7Bk-1%2C2%7D%20%5C%5C%200.5(u_%7Bk%2C1%7D%20%2B%20u_%7Bk%2C2%7D)%20-%20u_%7Bk%2C2%7D%20%5Cend%7Bpmatrix%7D%2C%20%5Ctext%7B%20with%20%7D%20u_%7B-1%2C2%7D%20%3D%20u_%7Bn-1%2C2%7D%20%5Ctext%7B%20when%20%7D%20k%20%3D%200.%7D)
 
 The Local Time Derivative Update:
