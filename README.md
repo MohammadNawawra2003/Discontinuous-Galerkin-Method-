@@ -131,7 +131,6 @@ Numerical Solution u(x,t) Surface (Space-Time DG, P=1):
 ---------------------------------
 
 --------------------
-SDG code output:
 The full semi-descrete sysyem equation in matrix form:
 
 ![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20%7B%5Ccolor%7Bwhite%7D%20%5Cfrac%7B%5CDelta%20x%7D%7B6%7D%0A%5Cbegin%7Bpmatrix%7D%0A%5Cbegin%7Bpmatrix%7D%202%20%26%201%20%5C%5C%201%20%26%202%20%5Cend%7Bpmatrix%7D%20%26%200%20%26%20%5Cdots%20%26%200%20%5C%5C%0A0%20%26%20%5Cbegin%7Bpmatrix%7D%202%20%26%201%20%5C%5C%201%20%26%202%20%5Cend%7Bpmatrix%7D%20%26%20%5Cdots%20%26%200%20%5C%5C%0A%5Cvdots%20%26%20%5Cvdots%20%26%20%5Cddots%20%26%20%5Cvdots%20%5C%5C%0A0%20%26%200%20%26%20%5Cdots%20%26%20%5Cbegin%7Bpmatrix%7D%202%20%26%201%20%5C%5C%201%20%26%202%20%5Cend%7Bpmatrix%7D%0A%5Cend%7Bpmatrix%7D%0A%5Cbegin%7Bpmatrix%7D%0Au%27_%7B0%2C1%7D%20%5C%5C%20u%27_%7B0%2C2%7D%20%5C%5C%0Au%27_%7B1%2C1%7D%20%5C%5C%20u%27_%7B1%2C2%7D%20%5C%5C%0A%5Cvdots%20%5C%5C%0Au%27_%7Bn-1%2C1%7D%20%5C%5C%20u%27_%7Bn-1%2C2%7D%0A%5Cend%7Bpmatrix%7D%0A%3D%0A%5Cbegin%7Bpmatrix%7D%0AR_0(U)%20%5C%5C%0AR_1(U)%20%5C%5C%0A%5Cvdots%20%5C%5C%0AR_%7Bn-1%7D(U)%0A%5Cend%7Bpmatrix%7D})
@@ -145,40 +144,6 @@ k (for c> 0, α=1.0):
 The Local Time Derivative Update:
 
 ![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20%7B%5Ccolor%7Bwhite%7D%20%5Cfrac%7BdU_k%7D%7Bdt%7D%20%3D%20M_k%5E%7B-1%7D%20R_k(U)%20%3D%20%5Cfrac%7B2%7D%7B%5CDelta%20x%7D%20%5Cbegin%7Bpmatrix%7D%202%20%26%20-1%20%5C%5C%20-1%20%26%202%20%5Cend%7Bpmatrix%7D%20R_k(U)%7D)
---------------------
-STDG code output:
-
---- Global Solution Vector (U) ---
-Vector size: 3200
-Vector is too large (3200) to print in full. Showing snippet: [ 6.14896525e-04  3.11107269e-01 ... ] ... [ ... -0.31084437 -0.0010487 ]
-------------------------------------
-
---- Global Right-Hand Side Vector (b) ---
-Vector size: 3200
-Vector is too large (3200) to print in full. Showing snippet: [0.00260368 0.0051859  0.         0.         0.01013839 ... ] ... [ ... 0. 0. 0.]
-------------------------------------------
-
---- Global System Matrix (A) ---
-Matrix size: 3200x3200 (sparse, CSR format)
-Matrix is too large (3200x3200) to print in full. Showing a snippet of non-zero entries:
-<Compressed Sparse Row sparse matrix of dtype 'float64'
-        with 139 stored elements and shape (30, 30)>
-  Coords        Values
-  (0, 0)        0.0125...
-  (0, 1)        0.0083...
-  (0, 2)        0.0104...
-  (0, 3)        0.0062...
-  (1, 0)        2.77e-19... (close to zero)
-  (1, 1)        0.0125...
-  ...
-  (4, 1)        -0.0083...
-  (4, 3)        -0.0041...
-  (4, 4)        0.0125...
-  (4, 5)        0.0083...
-  (4, 6)        0.0104...
-  (4, 7)        0.0062...
-  ...
-  (i, j) value (where i is row index, j is column index in the full 3200x3200 matrix)
 
 
 Discontinuous Galerkin Method
