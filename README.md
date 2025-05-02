@@ -150,7 +150,7 @@ AU = b
 
 
 Vector U:
-![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20U%20%3D%20%5Cbegin%7Bpmatrix%7D%20U_%7B0%2C0%7D%20%5C%5C%20U_%7B0%2C1%7D%20%5C%5C%20%5Cvdots%20%5C%5C%20U_%7B0%2CN_x-1%7D%20%5C%5C%20U_%7B1%2C0%7D%20%5C%5C%20%5Cvdots%20%5C%5C%20U_%7BN_t-1%2CN_x-1%7D%20%5Cend%7Bpmatrix%7D)
+[![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20U%20%3D%20%5Cbegin%7Bpmatrix%7D%20U_%7B0%2C0%7D%20%5C%5C%20U_%7B0%2C1%7D%20%5C%5C%20%5Cvdots%20%5C%5C%20U_%7B0%2CN_x-1%7D%20%5C%5C%20U_%7B1%2C0%7D%20%5C%5C%20%5Cvdots%20%5C%5C%20U_%7BN_t-1%2CN_x-1%7D%20%5Cend%7Bpmatrix%7D)](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20\color{white} \mathbf{U} = \begin{pmatrix} U_{0,0} \ U_{0,1} \ \vdots \ U_{0,N_x-1} \ U_{1,0} \ \vdots \ U_{N_t-1,N_x-1} \end{pmatrix})
 
 
 Vector b:
