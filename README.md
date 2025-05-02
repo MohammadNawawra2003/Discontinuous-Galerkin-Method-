@@ -148,17 +148,17 @@ The Local Time Derivative Update:
 The large linear system used in STDG is expressed as:
 AU = b
 
+
 Vector U:
 ![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20{\color{white}U%20=%20\begin{pmatrix}%20U_{0,0}%20\\%20U_{0,1}%20\\%20\vdots%20\\%20U_{0,N_x-1}%20\\%20U_{1,0}%20\\%20\vdots%20\\%20U_{N_t-1,N_x-1}%20\end{pmatrix}})
 
 
 Vector b:
-![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20b%20%3D%20%5Cbegin%7Bpmatrix%7D%20b_%7B0%2C0%7D%20%5C%5C%20b_%7B0%2C1%7D%20%5C%5C%20%5Cvdots%20%5C%5C%20b_%7B0%2CN_x-1%7D%20%5C%5C%200%20%5C%5C%20%5Cvdots%20%5C%5C%200%20%5Cend%7Bpmatrix%7D)
+![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20{\color{white}b%20=%20\begin{pmatrix}%20b_{0,0}%20\\%20b_{0,1}%20\\%20\vdots%20\\%20b_{0,N_x-1}%20\\%200%20\\%20\vdots%20\\%200%20\end{pmatrix}})
 
 
 Matrix A:
-
-![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20A%20%3D%20%5Cbegin%7Bpmatrix%7D%20A_%7B0%2C0%7D%20%26%200%20%26%200%20%26%20%5Ccdots%20%26%200%20%5C%5C%20A_%7B1%2C0%7D%20%26%20A_%7B1%2C1%7D%20%26%200%20%26%20%5Ccdots%20%26%200%20%5C%5C%200%20%26%20A_%7B2%2C1%7D%20%26%20A_%7B2%2C2%7D%20%26%20%5Ccdots%20%26%200%20%5C%5C%20%5Cvdots%20%26%20%5Cvdots%20%26%20%5Cvdots%20%26%20%5Cddots%20%26%20%5Cvdots%20%5C%5C%200%20%26%200%20%26%200%20%26%20%5Ccdots%20%26%20A_%7BN_t-1%2CN_t-1%7D%20%5Cend%7Bpmatrix%7D)
+![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20{\color{white}A%20=%20\begin{pmatrix}%20A_{0,0}%20&%200%20&%200%20&%20\cdots%20&%200%20\\%20A_{1,0}%20&%20A_{1,1}%20&%200%20&%20\cdots%20&%200%20\\%200%20&%20A_{2,1}%20&%20A_{2,2}%20&%20\cdots%20&%200%20\\%20\vdots%20&%20\vdots%20&%20\vdots%20&%20\ddots%20&%20\vdots%20\\%200%20&%200%20&%200%20&%20\cdots%20&%20A_{N_t-1,N_t-1}%20\end{pmatrix}})
 
 
 
