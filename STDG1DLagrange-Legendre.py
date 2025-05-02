@@ -432,6 +432,7 @@ class SpaceTimeDG:
 
         print("Assembling Space-Time DG system (standard weak form, upwind fluxes, corrected temporal coupling)...")
         print(f"Spatial elements: {Nx}, Temporal elements: {Nt}, Poly Order: {p}")
+        print(f"Total DOFs: {n_dofs}")
         print(f"Using sparse matrix assembly.")
 
 
@@ -461,146 +462,205 @@ class SpaceTimeDG:
                     global_row_idx = elem_idx_global * n_nodes_per_element + test_idx_local
 
                     # Map local 2D index to 1D indices (row-major order for phi_kl = L_k(xi)L_l(eta), with l=temporal index)
+                    # The original code had test_i = test_idx_local % n_nodes_1d, test_j = test_idx_local // n_nodes_1d
+                    # This maps a 1D index `k` (from 0 to n_nodes_per_element - 1) to 2D indices `i`, `j`
+                    # such that `k = j * n_nodes_1d + i`. So `i = k % n_nodes_1d`, `j = k // n_nodes_1d`.
+                    # If trial/test bases are phi_{i_spatial, j_temporal}, where i_spatial is column index, j_temporal is row index
+                    # in the 2D basis grid for an element (like phi_{00}, phi_{10}, phi_{01}, phi_{11} for p=1),
+                    # and the global DOF ordering is (phi_{00}, phi_{10}, phi_{01}, phi_{11}) within an element block,
+                    # then local_dof_idx corresponds to this 1D ordering.
+                    # The 2D basis function phi_{i_spatial, j_temporal} is L_{i_spatial}(xi) * L_{j_temporal}(eta).
+                    # So test_idx_local -> (test_i, test_j) means L_{test_i}(xi) * L_{test_j}(eta).
+                    # The mapping should likely be: test_i (spatial index) = test_idx_local % n_nodes_1d,
+                    # test_j (temporal index) = test_idx_local // n_nodes_1d. This matches the original code.
                     test_i = test_idx_local % n_nodes_1d # spatial index of test basis L_{test_i}(xi)
                     test_j = test_idx_local // n_nodes_1d # temporal index of test basis L_{test_j}(eta)
 
 
                     # --- Volume Integral Contribution (from current element trial functions) ---
-                    for q in range(n_quad):
-                        xi_q = quad_x[q]
-                        eta_q = quad_t[q]
-                        weight_q = quad_weights[q]
+                    # ∫_K (-u_m phi_m psi_l,t - a u_m phi_m psi_l,x) dxdt * u_{i,j,m}
+                    # (Integral for test function psi_l over element (i,j), coupled with trial function phi_m from element (i,j))
+                    for trial_idx_local in range(n_nodes_per_element):
+                        # Global column index in the system matrix A for this trial function's coefficient
+                        global_col_idx = elem_idx_global * n_nodes_per_element + trial_idx_local
 
-                        dphi_test_dxi_q, dphi_test_deta_q = self.lagrange_basis_2d_gradient(xi_q, eta_q, test_i, test_j)
+                        # Map local 1D trial index to 2D indices (spatial, temporal)
+                        trial_i = trial_idx_local % n_nodes_1d
+                        trial_j = trial_idx_local // n_nodes_1d
 
-                        # Loop over trial functions (phi_m, m = trial_idx_local) from current element
-                        for trial_idx_local in range(n_nodes_per_element):
-                            # Global column index in the system matrix A for this trial function's coefficient
-                            global_col_idx = elem_idx_global * n_nodes_per_element + trial_idx_local
+                        # Evaluate basis functions and their derivatives at quadrature points (reference element)
+                        phi_trial_q_vals = self.lagrange_basis_2d(quad_x, quad_t, trial_i, trial_j)
+                        dphi_test_dxi_q_vals, dphi_test_deta_q_vals = self.lagrange_basis_2d_gradient(quad_x, quad_t, test_i, test_j)
 
-                            trial_i = trial_idx_local % n_nodes_1d
-                            trial_j = trial_idx_local // n_nodes_1d
-                            phi_trial_q = self.lagrange_basis_2d(xi_q, eta_q, trial_i, trial_j)
 
-                            A[global_row_idx, global_col_idx] += \
-                                weight_q * J_vol * ( -phi_trial_q * dphi_test_deta_q * (2.0/dt_phys) \
-                                                    - self.a * phi_trial_q * dphi_test_dxi_q * (2.0/dx_phys) )
+                        # Sum over quadrature points for the volume integral
+                        # Term: - phi_trial_q * dphi_test_deta_q * (2.0/dt_phys) - self.a * phi_trial_q * dphi_test_dxi_q * (2.0/dx_phys)
+                        # Need to multiply by weight_q and J_vol
+                        volume_integrand = - phi_trial_q_vals * dphi_test_deta_q_vals * (2.0/dt_phys) \
+                                           - self.a * phi_trial_q_vals * dphi_test_dxi_q_vals * (2.0/dx_phys)
+
+                        A[global_row_idx, global_col_idx] += \
+                            np.sum(volume_integrand * quad_weights) * J_vol
 
 
                     # --- Face Integral Contributions ---
 
                     # Temporal Top Face (eta = 1): + ∫_{top} u_h psi_l dS_t
-                    for q_xi_idx in range(n_face_quad_1d):
-                        xi_q = face_quad_points_1d[q_xi_idx]
-                        weight_q_xi = face_quad_weights_1d[q_xi_idx]
-                        phi_test_q = self.lagrange_basis_2d(xi_q, 1.0, test_i, test_j) # psi_l evaluated at eta=1
+                    # (Integral for test function psi_l over top face of element (i,j), coupled with trial function phi_m from element (i,j))
+                    # dS_t = (dx_phys/2) dxi
+                    for trial_idx_local in range(n_nodes_per_element):
+                         global_col_idx = elem_idx_global * n_nodes_per_element + trial_idx_local
+                         trial_i = trial_idx_local % n_nodes_1d
+                         trial_j = trial_idx_local // n_nodes_1d
 
-                        for trial_idx_local in range(n_nodes_per_element):
-                             # Global column index for trial function from *current* element
-                            global_col_idx = elem_idx_global * n_nodes_per_element + trial_idx_local
+                         # Evaluate basis functions at quadrature points on the top face (eta=1)
+                         phi_trial_q_vals_top = self.lagrange_basis_2d(face_quad_points_1d, 1.0, trial_i, trial_j) # phi_m evaluated at eta=1
+                         phi_test_q_vals_top = self.lagrange_basis_2d(face_quad_points_1d, 1.0, test_i, test_j) # psi_l evaluated at eta=1
 
-                            trial_i = trial_idx_local % n_nodes_1d
-                            trial_j = trial_idx_local // n_nodes_1d
-                            phi_trial_q = self.lagrange_basis_2d(xi_q, 1.0, trial_i, trial_j) # phi_m evaluated at eta=1
+                         # Sum over 1D quadrature points for the face integral
+                         # Term: phi_trial_q * phi_test_q
+                         # Need to multiply by weight_q_xi and J_face_t
+                         face_top_integrand = phi_trial_q_vals_top * phi_test_q_vals_top
 
-                            A[global_row_idx, global_col_idx] += \
-                                (+1.0) * phi_trial_q * phi_test_q * weight_q_xi * J_face_t # J_face_t = dx_phys/2.0
+                         A[global_row_idx, global_col_idx] += \
+                             np.sum(face_top_integrand * face_quad_weights_1d) * J_face_t # J_face_t = dx_phys/2.0
 
 
                     # Spatial Right Face (xi = 1): + ∫_{right} a u_h psi_l dS_x
-                    for q_eta_idx in range(n_face_quad_1d):
-                        eta_q = face_quad_points_1d[q_eta_idx]
-                        weight_q_eta = face_quad_weights_1d[q_eta_idx]
-                        phi_test_q = self.lagrange_basis_2d(1.0, eta_q, test_i, test_j) # psi_l evaluated at xi=1
+                    # (Integral for test function psi_l over right face of element (i,j), coupled with trial function phi_m from element (i,j))
+                    # dS_x = (dt_phys/2) deta
+                    for trial_idx_local in range(n_nodes_per_element):
+                         global_col_idx = elem_idx_global * n_nodes_per_element + trial_idx_local
+                         trial_i = trial_idx_local % n_nodes_1d
+                         trial_j = trial_idx_local // n_nodes_1d
 
-                        for trial_idx_local in range(n_nodes_per_element):
-                            # Global column index for trial function from *current* element
-                            global_col_idx = elem_idx_global * n_nodes_per_element + trial_idx_local
+                         # Evaluate basis functions at quadrature points on the right face (xi=1)
+                         phi_trial_q_vals_right = self.lagrange_basis_2d(1.0, face_quad_points_1d, trial_i, trial_j) # phi_m evaluated at xi=1
+                         phi_test_q_vals_right = self.lagrange_basis_2d(1.0, face_quad_points_1d, test_i, test_j) # psi_l evaluated at xi=1
 
-                            trial_i = trial_idx_local % n_nodes_1d
-                            trial_j = trial_idx_local // n_nodes_1d
-                            phi_trial_q = self.lagrange_basis_2d(1.0, eta_q, trial_i, trial_j) # phi_m evaluated at xi=1
+                         # Sum over 1D quadrature points for the face integral
+                         # Term: a * phi_trial_q * phi_test_q
+                         # Need to multiply by weight_q_eta and J_face_x
+                         face_right_integrand = self.a * phi_trial_q_vals_right * phi_test_q_vals_right
 
-                            A[global_row_idx, global_col_idx] += \
-                                (+self.a) * phi_trial_q * phi_test_q * weight_q_eta * J_face_x # J_face_x = dt_phys/2.0
+                         A[global_row_idx, global_col_idx] += \
+                             np.sum(face_right_integrand * face_quad_weights_1d) * J_face_x # J_face_x = dt_phys/2.0
 
 
                     # --- Face Integral Contributions (from neighbor/IC trial functions) ---
 
                     # Temporal Bottom Face (eta = -1): + ∫_{bottom} (-u^*) psi_l dS_t
-                    if i == 0: # Initial Condition at t=0
+                    # dS_t = (dx_phys/2) dxi
+                    if i == 0: # Initial Condition at t=0 (bottom face of element (0,j))
                         # u^* = u_init(x) at t=0. Term: ∫_{bottom} (-u_init) psi_l dS_t
                         # This is a known term on the RHS: + ∫_{bottom} u_init psi_l dS_t.
-                        for q_xi_idx in range(n_face_quad_1d):
-                            xi_q = face_quad_points_1d[q_xi_idx]
-                            weight_q_xi = face_quad_weights_1d[q_xi_idx]
-                            # Map reference xi to physical x at t=t_bottom
-                            x_q = 0.5 * dx_phys * (xi_q + 1) + x_left
-                            u_init_q = f_init(x_q, self.L)
-                            phi_test_q = self.lagrange_basis_2d(xi_q, -1.0, test_i, test_j) # psi_l evaluated at eta=-1
+                        # Evaluate u_init at quadrature points on the bottom face (map xi to physical x)
+                        x_left = self.x_elements[j]
+                        x_right = self.x_elements[j+1]
+                        dx_phys = x_right - x_left
+                        x_q_phys = 0.5 * dx_phys * (face_quad_points_1d + 1) + x_left
 
-                            # Contribution to b (RHS)
-                            b[global_row_idx] += \
-                                u_init_q * phi_test_q * weight_q_xi * J_face_t # J_face_t = dx_phys/2.0
+                        u_init_q_vals = f_init(x_q_phys, self.L)
+
+                        # Evaluate test function psi_l at quadrature points on the bottom face (eta=-1)
+                        phi_test_q_vals_bottom = self.lagrange_basis_2d(face_quad_points_1d, -1.0, test_i, test_j) # psi_l evaluated at eta=-1
+
+                        # Sum over 1D quadrature points for the integral
+                        # Term for RHS: u_init_q * phi_test_q
+                        # Need to multiply by weight_q_xi and J_face_t
+                        rhs_integrand = u_init_q_vals * phi_test_q_vals_bottom
+
+                        # Contribution to b (RHS)
+                        b[global_row_idx] += \
+                            np.sum(rhs_integrand * face_quad_weights_1d) * J_face_t # J_face_t = dx_phys/2.0
+
 
                     else: # i > 0, inflow from element (i-1, j) Top face (eta=1 of the neighbor)
                         # u^* = u_{i-1,j}(xi, 1). Term: ∫_{bottom} (-u_{i-1,j}(xi,1)) psi_l(xi,-1) dS_t.
                         # This involves trial DOFs from element (i-1, j).
                         neighbor_elem_idx_global = (i - 1) * Nx + j # Neighbor is directly below
 
-                        for q_xi_idx in range(n_face_quad_1d):
-                            xi_q = face_quad_points_1d[q_xi_idx]
-                            weight_q_xi = face_quad_weights_1d[q_xi_idx]
-                            phi_test_q = self.lagrange_basis_2d(xi_q, -1.0, test_i, test_j) # psi_l evaluated at eta=-1
-
-                            # Loop over trial functions from the neighbor element (i-1, j)
-                            for trial_idx_neighbor_local in range(n_nodes_per_element):
-                                # Global column index for trial function from the *neighbor* element
-                                global_col_idx_neighbor = neighbor_elem_idx_global * n_nodes_per_element + trial_idx_neighbor_local
-
-                                trial_i_neighbor = trial_idx_neighbor_local % n_nodes_1d
-                                trial_j_neighbor = trial_idx_neighbor_local // n_nodes_1d
-                                # Neighbor trial basis evaluated at its top face (eta=1)
-                                phi_trial_neighbor_q = self.lagrange_basis_2d(xi_q, 1.0, trial_i_neighbor, trial_j_neighbor)
-
-                                # Add to A[test_dof_current_elem, trial_dof_neighbor_elem]
-                                # Term is ∫_{bottom} -u_{i-1,j} psi_l dS
-                                A[global_row_idx, global_col_idx_neighbor] += \
-                                   (-1.0) * phi_trial_neighbor_q * phi_test_q * weight_q_xi * J_face_t # J_face_t = dx_phys/2.0
-
-
-                    # Spatial Left Face (xi = -1): ∫_{left} -a u^* psi_l dS_x
-                    if j == 0: # Left boundary, neighbor is element (i, Nx-1) due to periodic BC
-                        neighbor_elem_idx_global = i * Nx + (Nx - 1)
-                    else: # Interior left face, neighbor is element (i, j-1)
-                        neighbor_elem_idx_global = i * Nx + (j - 1)
-
-                    for q_eta_idx in range(n_face_quad_1d):
-                        eta_q = face_quad_points_1d[q_eta_idx]
-                        weight_q_eta = face_quad_weights_1d[q_eta_idx]
-                        phi_test_q = self.lagrange_basis_2d(-1.0, eta_q, test_i, test_j) # psi_l evaluated at xi=-1
-
-                        # Loop over trial functions from the neighbor element
                         for trial_idx_neighbor_local in range(n_nodes_per_element):
                             # Global column index for trial function from the *neighbor* element
                             global_col_idx_neighbor = neighbor_elem_idx_global * n_nodes_per_element + trial_idx_neighbor_local
 
+                            # Map local 1D neighbor trial index to 2D indices
                             trial_i_neighbor = trial_idx_neighbor_local % n_nodes_1d
                             trial_j_neighbor = trial_idx_neighbor_local // n_nodes_1d
-                            # Neighbor trial basis evaluated at its right face (xi=1)
-                            phi_trial_neighbor_q = self.lagrange_basis_2d(1.0, eta_q, trial_i_neighbor, trial_j_neighbor)
+
+                            # Evaluate neighbor trial basis at its top face (eta=1) at quadrature points
+                            phi_trial_neighbor_q_vals_top = self.lagrange_basis_2d(face_quad_points_1d, 1.0, trial_i_neighbor, trial_j_neighbor)
+
+                            # Evaluate current test function psi_l at current element's bottom face (eta=-1) at quadrature points
+                            phi_test_q_vals_bottom = self.lagrange_basis_2d(face_quad_points_1d, -1.0, test_i, test_j) # psi_l evaluated at eta=-1
+
+                            # Sum over 1D quadrature points for the integral
+                            # Term for LHS matrix A: (-1.0) * phi_trial_neighbor_q * phi_test_q
+                            # Need to multiply by weight_q_xi and J_face_t
+                            face_bottom_integrand = (-1.0) * phi_trial_neighbor_q_vals_top * phi_test_q_vals_bottom
 
                             # Add to A[test_dof_current_elem, trial_dof_neighbor_elem]
-                            # Term is ∫_{left} -a u_neighbor psi_l dS
                             A[global_row_idx, global_col_idx_neighbor] += \
-                                (-self.a) * phi_trial_neighbor_q * phi_test_q * weight_q_eta * J_face_x # J_face_x = dt_phys/2.0
+                               np.sum(face_bottom_integrand * face_quad_weights_1d) * J_face_t # J_face_t = dx_phys/2.0
 
+
+                    # Spatial Left Face (xi = -1): ∫_{left} -a u^* psi_l dS_x
+                    # dS_x = (dt_phys/2) deta
+                    if j == 0: # Left spatial boundary, neighbor is element (i, Nx-1) due to periodic BC
+                        neighbor_elem_idx_global = i * Nx + (Nx - 1)
+                    else: # Interior left face, neighbor is element (i, j-1)
+                        neighbor_elem_idx_global = i * Nx + (j - 1)
+
+                    for trial_idx_neighbor_local in range(n_nodes_per_element):
+                        # Global column index for trial function from the *neighbor* element
+                        global_col_idx_neighbor = neighbor_elem_idx_global * n_nodes_per_element + trial_idx_neighbor_local
+
+                        # Map local 1D neighbor trial index to 2D indices
+                        trial_i_neighbor = trial_idx_neighbor_local % n_nodes_1d
+                        trial_j_neighbor = trial_idx_neighbor_local // n_nodes_1d
+
+                        # Evaluate neighbor trial basis at its right face (xi=1) at quadrature points
+                        phi_trial_neighbor_q_vals_right = self.lagrange_basis_2d(1.0, face_quad_points_1d, trial_i_neighbor, trial_j_neighbor)
+
+                        # Evaluate current test function psi_l at current element's left face (xi=-1) at quadrature points
+                        phi_test_q_vals_left = self.lagrange_basis_2d(-1.0, face_quad_points_1d, test_i, test_j) # psi_l evaluated at xi=-1
+
+                        # Sum over 1D quadrature points for the integral
+                        # Term for LHS matrix A: (-self.a) * phi_trial_neighbor_q * phi_test_q
+                        # Need to multiply by weight_q_eta and J_face_x
+                        face_left_integrand = (-self.a) * phi_trial_neighbor_q_vals_right * phi_test_q_vals_left
+
+                        # Add to A[test_dof_current_elem, trial_dof_neighbor_elem]
+                        A[global_row_idx, global_col_idx_neighbor] += \
+                            np.sum(face_left_integrand * face_quad_weights_1d) * J_face_x # J_face_x = dt_phys/2.0
 
         # Convert LIL matrix to CSR format for efficient solving
         # CHANGED: Convert to CSR format before solving
         A = A.tocsr()
 
         print("Assembly complete.")
+        # --- NEW: Print Global System Matrix A and RHS vector b ---
+        print("\n--- Global System Matrix (A) ---")
+        print(f"Matrix size: {A.shape[0]}x{A.shape[1]} (sparse, CSR format)")
+        # Print a representation of the sparse matrix. Default print shows non-zero entries.
+        if A.shape[0] <= 20:
+             print(A)
+        else:
+             print(f"Matrix is too large ({A.shape[0]}x{A.shape[1]}) to print in full. Showing a snippet of non-zero entries:")
+             # Sparse matrix printing usually shows (row, col) value
+             print(A[:min(A.shape[0], 30), :min(A.shape[1], 30)]) # Print top-left corner non-zeros up to a limit
+             print("...")
+
+        print("\n--- Global Right-Hand Side Vector (b) ---")
+        print(f"Vector size: {b.shape[0]}")
+        # Print snippets for large vectors
+        if b.shape[0] <= 20:
+            print(b)
+        else:
+            print(f"Vector is too large ({b.shape[0]}) to print in full. Showing snippet: {b[0:10]} ... {b[-10:]}")
+        print("------------------------------------------")
+        # --- End NEW ---
+
         return A, b
 
     def solve(self, f_init):
@@ -649,6 +709,18 @@ class SpaceTimeDG:
                 raise RuntimeError("Sparse solver spsolve returned None.")
             print("System solved successfully.")
 
+            # --- NEW: Print Global Solution Vector U ---
+            print("\n--- Global Solution Vector (U) ---")
+            print(f"Vector size: {self.u.shape[0]}")
+            # Print snippets for large vectors
+            if self.u.shape[0] <= 20:
+                print(self.u)
+            else:
+                 print(f"Vector is too large ({self.u.shape[0]}) to print in full. Showing snippet: {self.u[0:10]} ... {self.u[-10:]}")
+            print("------------------------------------")
+            # --- End NEW ---
+
+
         except (RuntimeError, ValueError) as e:
             print(f"Error solving linear system with spsolve: {e}")
             print("The sparse matrix might be singular or ill-conditioned.")
@@ -658,6 +730,8 @@ class SpaceTimeDG:
         except Exception as e:
             # Catch any other unexpected exceptions from spsolve
             print(f"An unexpected error occurred during spsolve: {e}")
+            import traceback # Added traceback for debugging unexpected errors
+            traceback.print_exc()
             self.u = None
 
         # Note: The original comment about restoring 'original_p' is skipped
@@ -669,6 +743,7 @@ class SpaceTimeDG:
         Extract and evaluate the numerical solution at a specific discrete time level t = t_elements[time_step_idx].
         This corresponds to the solution on the top face of the elements in time row time_step_idx - 1
         (for time_step_idx > 0) or the initial condition projection (for time_step_idx = 0).
+        Evaluates at the spatial GLL nodes for each element.
 
         Parameters:
         -----------
@@ -678,7 +753,7 @@ class SpaceTimeDG:
         Returns:
         --------
         tuple
-            (x_plot, u_plot) numpy arrays, sorted by x-coordinate.
+            (x_plot, u_plot) numpy arrays, sorted by x-coordinate, evaluated at GLL nodes.
             Returns (None, None) if self.u is not available (e.g., solve failed).
         """
         # This function only extracts and evaluates. It shouldn't print
@@ -686,11 +761,18 @@ class SpaceTimeDG:
         # during animation setup when u might be None initially.
         # The caller should handle the None check.
         if self.u is None:
+             # print("Warning: Solution vector self.u is not available in get_solution_at_time_level.") # Suppress to avoid noise
              return None, None
 
 
         if not (0 <= time_step_idx <= self.n_elements_temporal):
+            # Added check for time_step_idx > self.n_elements_temporal
+            if time_step_idx > self.n_elements_temporal:
+                 print(f"Error: time_step_idx ({time_step_idx}) must be <= n_elements_temporal ({self.n_elements_temporal})")
+                 return None, None # Return None on invalid index
+
             raise ValueError(f"time_step_idx ({time_step_idx}) must be between 0 and {self.n_elements_temporal}")
+
 
         Nx = self.n_elements_spatial
         Nt = self.n_elements_temporal
@@ -748,10 +830,90 @@ class SpaceTimeDG:
         return x_plot, u_plot
 
 
+    # --- ADDED: Helper method to get dense solution slice at a time level ---
+    # This method is kept separate for potential future use (e.g., smoother animation)
+    # but will not be used in the comparison plot to match the desired 'o-' style at nodes.
+    def get_dense_solution_slice(self, time_step_idx, points_per_element_1d=10):
+        """
+        Extract and evaluate the numerical solution at a specific discrete time level t = t_elements[time_step_idx].
+        Evaluates on a dense grid of points within each spatial element for smoother plotting.
+
+        Parameters:
+        -----------
+        time_step_idx : int
+            Index of the time level from self.t_elements (0 to n_elements_temporal)
+        points_per_element_1d : int
+            Number of evaluation points per spatial element in 1D (xi direction).
+            Total points per element slice will be this number.
+
+        Returns:
+        --------
+        tuple
+            (x_plot, u_plot) numpy arrays, sorted by x-coordinate, evaluated on the dense grid.
+            Returns (None, None) if self.u is not available (e.g., solve failed).
+        """
+        if self.u is None:
+             # print("Warning: Solution vector self.u is not available in get_dense_solution_slice.") # Suppress to avoid noise
+             return None, None
+
+        if not (0 <= time_step_idx <= self.n_elements_temporal):
+             # Added check for time_step_idx > self.n_elements_temporal
+            if time_step_idx > self.n_elements_temporal:
+                 print(f"Error: time_step_idx ({time_step_idx}) must be <= n_elements_temporal ({self.n_elements_temporal})")
+                 return None, None # Return None on invalid index
+
+            raise ValueError(f"time_step_idx ({time_step_idx}) must be between 0 and {self.n_elements_temporal}")
+
+        Nx = self.n_elements_spatial
+        Nt = self.n_elements_temporal
+
+        x_plot_list = []
+        u_plot_list = []
+
+        # Time element row and eta evaluation point
+        if time_step_idx == 0:
+            i_elem_row = 0
+            eta_eval = -1.0
+        else:
+            i_elem_row = time_step_idx - 1
+            eta_eval = 1.0
+
+        # Generate dense evaluation points in the reference xi direction
+        # Add endpoints explicitly to avoid potential floating point issues near element boundaries
+        xi_eval_points = np.linspace(-1.0, 1.0, points_per_element_1d)
+        eta_eval_points = np.full_like(xi_eval_points, eta_eval)
+
+        for j_elem_col in range(Nx): # Spatial element index (0 to Nx-1)
+            # Map dense reference xi points to physical x in element [x_j, x_{j+1}]
+            x_left = self.x_elements[j_elem_col]
+            x_right = self.x_elements[j_elem_col+1]
+            dx_phys = x_right - x_left
+            x_dense_phys = 0.5 * dx_phys * (xi_eval_points + 1) + x_left
+
+            # Evaluate the local polynomial u_h at these dense points (xi, eta_eval)
+            u_vals_at_time = self.evaluate_element_solution(i_elem_row, j_elem_col, xi_eval_points, eta_eval_points)
+
+            x_plot_list.extend(x_dense_phys)
+            u_plot_list.extend(u_vals_at_time)
+
+        # Convert lists to numpy arrays
+        x_plot = np.array(x_plot_list)
+        u_plot = np.array(u_plot_list)
+
+        # Sort by x-coordinate (should already be sorted if processing elements left-to-right)
+        # but sorting is robust if element processing order changes or nodes overlap slightly.
+        sort_indices = np.argsort(x_plot)
+        x_plot = x_plot[sort_indices]
+        u_plot = u_plot[sort_indices]
+
+        return x_plot, u_plot
+
+
     # --- plot_solution method (kept for static plots) ---
     def plot_solution(self, time_step_idx, f_init, plot_dir=".", show_plot=True):
         """
         Plots the numerical and exact solutions at a specific time level.
+        Uses the GLL nodes for plotting the numerical solution.
 
         Parameters:
         -----------
@@ -764,32 +926,39 @@ class SpaceTimeDG:
         show_plot : bool, optional
             Whether to display the plot using plt.show(). Defaults to True.
         """
-        if self.u is None and time_step_idx > 0:
+        # Check if time_step_idx is valid
+        if not (0 <= time_step_idx <= self.n_elements_temporal):
+             print(f"Error: Invalid time_step_idx ({time_step_idx}) provided for plot_solution. Must be between 0 and {self.n_elements_temporal}.")
+             return
+
+        if self.u is None and time_step_idx > 0: # If t>0 and solve failed, numerical data is unavailable
              print("Cannot plot numerical solution as it is not available (solve failed?).")
              # Can still plot initial and exact solution at t=0 if needed, but the function assumes self.u exists for t > 0.
-             if show_plot: # Still show if requested, but will be empty or only exact
-                  # To plot *only* the exact solution if numerical failed at t>0:
-                  if time_step_idx == 0:
-                       # For t=0, get_solution_at_time_level *should* work even if solve failed IF IC proj is handled differently.
-                       # But based on its implementation, it needs self.u. Let's rely on the check inside.
-                       pass # Continue and get_solution might return None,None
-                  else:
-                       # If t>0 and solve failed, numerical data is unavailable.
-                       # We can skip plotting the numerical data line.
-                       pass # Continue to plot Exact below
-             else: # If not showing and no numerical solution, just return
-                 return
+             # Let's handle the case where self.u is None but time_step_idx == 0 - this should ideally work
+             if time_step_idx == 0:
+                  # get_solution_at_time_level checks for self.u None internally
+                  x_plot_num, u_plot_num = self.get_solution_at_time_level(time_step_idx) # Try to get it anyway
+                  if x_plot_num is None: # If it failed even for t=0 (e.g. mesh creation failed)
+                       if show_plot: plt.show() # Show empty plot if requested
+                       else: plt.close()
+                       return
+             else: # t > 0 and self.u is None
+                  x_plot_num, u_plot_num = None, None # Explicitly set to None
 
 
-        if time_step_idx > self.n_elements_temporal:
-             raise ValueError(f"time_step_idx ({time_step_idx}) must be <= n_elements_temporal ({self.n_elements_temporal})")
+        else: # self.u is not None (solve succeeded) or time_step_idx == 0
+             x_plot_num, u_plot_num = self.get_solution_at_time_level(time_step_idx)
+
+             # Check again if getting solution at time level returned None (e.g. invalid index or other issue)
+             if x_plot_num is None and time_step_idx > 0:
+                  print(f"Warning: Could not retrieve numerical solution data at time step index {time_step_idx} for plotting.")
+                  if show_plot: plt.show() # Show empty plot if requested
+                  else: plt.close()
+                  return # Cannot plot anything if x data is None
 
         t_plot = self.t_elements[time_step_idx]
 
         print(f"Generating plot at time t = {t_plot:.4f} (Time Step Index: {time_step_idx})")
-
-        # Get numerical solution (or IC projection at t=0)
-        x_plot_num, u_plot_num = self.get_solution_at_time_level(time_step_idx)
 
         # Get exact solution
         x_exact_plot = np.linspace(0, self.L, 200) # Use more points for smooth exact solution plot
@@ -799,11 +968,21 @@ class SpaceTimeDG:
         fig, ax = plt.subplots(figsize=(10, 6))
 
         # Plot numerical solution - using markers at node points
-        if x_plot_num is not None: # Only plot numerical if available
-             ax.plot(x_plot_num, u_plot_num, 'o-', label=f'Numerical (p={self.p})', fillstyle='none', markersize=6)
+        if x_plot_num is not None and u_plot_num is not None: # Only plot numerical if available
+             # Add check for NaNs in numerical solution before plotting
+             if np.any(np.isnan(u_plot_num)) or np.any(np.isinf(u_plot_num)):
+                  print(f"Warning: Numerical solution at t={t_plot:.4f} contains NaN/Inf, skipping numerical plot line.")
+                  # Still plot exact if available
+             else:
+                  ax.plot(x_plot_num, u_plot_num, 'o-', label=f'Numerical (p={self.p})', fillstyle='none', markersize=6)
+
 
         # Plot exact solution
-        ax.plot(x_exact_plot, u_exact_plot, 'k--', label='Exact')
+        if np.any(np.isfinite(u_exact_plot)): # Only plot exact if finite values exist
+             ax.plot(x_exact_plot, u_exact_plot, 'k--', label='Exact')
+        else:
+             print(f"Warning: Exact solution at t={t_plot:.4f} contains NaN/Inf, skipping exact plot line.")
+
 
         ax.set_title(f'Solution at t = {t_plot:.4f}', fontsize=ftSz1)
         ax.set_xlabel('x', fontsize=ftSz2)
@@ -876,8 +1055,14 @@ class SpaceTimeDG:
              plt.close(fig) # Close the figure
              return
 
-        surf = ax.plot_trisurf(x_flat, t_flat, u_flat, cmap=plt.cm.viridis, linewidth=0, antialiased=False)
-        # Can also use plot_surface if the nodes form a structured grid, but plot_trisurf is more general.
+        try: # Add try-except around the plotting call itself
+            surf = ax.plot_trisurf(x_flat, t_flat, u_flat, cmap=plt.cm.viridis, linewidth=0, antialiased=False)
+            # Can also use plot_surface if the nodes form a structured grid, but plot_trisurf is more general.
+        except Exception as e:
+            print(f"Error during 3D plotting: {e}")
+            print("This might happen with certain data structures or matplotlib versions.")
+            plt.close(fig)
+            return
 
         # Add labels and title
         ax.set_xlabel('x', fontsize=ftSz2)
@@ -929,6 +1114,7 @@ class SpaceTimeDG:
         print("Creating live animation...")
 
         # Get initial data for plotting lines and setting limits
+        # Use GLL nodes for animation (as used in plot_solution)
         x_plot_num_initial, u_plot_num_initial = self.get_solution_at_time_level(0)
 
         if x_plot_num_initial is None:
@@ -961,18 +1147,28 @@ class SpaceTimeDG:
         # Animation update function
         def animate(frame_idx):
             """Update function for the animation."""
+            # frame_idx corresponds to the time step index from 0 to Nt
+            if frame_idx > self.n_elements_temporal: # Safety check
+                 return line_num, line_exact, title
+
             t_current = self.t_elements[frame_idx]
 
-            # Get numerical solution data for the current time step
-            # We reuse the x_plot_num_initial as the x-coordinates don't change
-            _, u_plot_num_current = self.get_solution_at_time_level(frame_idx)
+            # Get numerical solution data for the current time step (using GLL nodes)
+            # We reuse the x_plot_num_initial as the x-coordinates don't change (at GLL nodes)
+            x_num_current, u_plot_num_current = self.get_solution_at_time_level(frame_idx)
 
             # Get exact solution data for the current time step
             u_exact_plot_current = exact_solution(x_exact_plot, t_current, self.L, self.a, f_init)
 
             # Update the data for the plot lines
             if u_plot_num_current is not None:
-                 line_num.set_ydata(u_plot_num_current)
+                 # Check for NaNs/Infs before updating data
+                 if np.any(np.isnan(u_plot_num_current)) or np.any(np.isinf(u_plot_num_current)):
+                      # If NaNs detected, perhaps set ydata to NaN to show a gap or stop animating?
+                      # For simplicity, just skip updating this frame's numerical line if invalid.
+                      pass # line_num keeps its previous data
+                 else:
+                      line_num.set_ydata(u_plot_num_current)
             # Note: If numerical solution failed (u_plot_num_current is None), the line_num will keep its last valid data.
             # You could hide it if needed: line_num.set_visible(u_plot_num_current is not None)
 
@@ -1025,7 +1221,7 @@ class SpaceTimeDG:
         --------
         ndarray
             Array of u_h values evaluated at the given points.
-            Returns array of np.nan if self.u is not available.
+            Returns array of np.nan if self.u is not available or indices are invalid.
         """
         if self.u is None:
             # This method should ideally only be called if solve was successful,
@@ -1038,12 +1234,25 @@ class SpaceTimeDG:
         n_nodes_per_element = self.n_nodes_per_element
         n_nodes_1d = self.n_nodes_1d
 
+        # Check for valid element indices
+        if not (0 <= i_elem_row < Nt) or not (0 <= j_elem_col < Nx):
+             print(f"Error: Invalid element indices ({i_elem_row}, {j_elem_col}) in evaluate_element_solution. Expected (0..{Nt-1}, 0..{Nx-1}).")
+             return np.full(len(xi_points), np.nan)
+
+
         # Get local solution coefficients for the specified element
         elem_global_idx = i_elem_row * Nx + j_elem_col
         # Access coefficients from the global solution vector self.u
         # The coefficients for element (i, j) are at indices from elem_global_idx * n_nodes_per_element
         # up to (elem_global_idx + 1) * n_nodes_per_element - 1
-        u_local_coeffs = self.u[elem_global_idx * n_nodes_per_element : (elem_global_idx + 1) * n_nodes_per_element]
+        start_idx = elem_global_idx * n_nodes_per_element
+        end_idx = start_idx + n_nodes_per_element
+
+        if end_idx > len(self.u):
+             print(f"Error: Solution vector size mismatch in evaluate_element_solution. Expected at least {end_idx} DOFs, but self.u has size {len(self.u)}.")
+             return np.full(len(xi_points), np.nan)
+
+        u_local_coeffs = self.u[start_idx : end_idx]
 
         # Initialize result array
         u_eval = np.zeros_like(xi_points, dtype=float)
@@ -1056,7 +1265,12 @@ class SpaceTimeDG:
             trial_j = local_dof_idx // n_nodes_1d # temporal index of basis L_{trial_j}(eta)
 
             # Evaluate the basis function at the given reference points
-            phi_m_eval = self.lagrange_basis_2d(xi_points, eta_points, trial_i, trial_j)
+            try: # Add try-except around basis evaluation
+                 phi_m_eval = self.lagrange_basis_2d(xi_points, eta_points, trial_i, trial_j)
+            except Exception as e:
+                 print(f"Error evaluating basis function L_{trial_i}L_{trial_j} for element ({i_elem_row}, {j_elem_col}) at points: {e}")
+                 return np.full(len(xi_points), np.nan) # Return NaN on basis evaluation error
+
 
             # Add contribution: coefficient * basis_value
             u_eval += u_local_coeffs[local_dof_idx] * phi_m_eval
@@ -1091,7 +1305,7 @@ class SpaceTimeDG:
 
         Nx = self.n_elements_spatial
         # Use the last time row (index Nt-1) which corresponds to the solution near T=T
-        i_elem_row = self.n_elements_temporal - 1
+        i_elem_row_for_T = self.n_elements_temporal - 1
         t_eval = self.T # Evaluation time for exact solution
 
         # Quadrature for spatial integral over each element [x_j, x_{j+1}]
@@ -1140,7 +1354,7 @@ class SpaceTimeDG:
 
             # Check if u_h_quad contains NaN or Inf before using it
             if np.any(np.isnan(u_h_quad)) or np.any(np.isinf(u_h_quad)):
-                 print(f"Warning: Numerical solution contains NaN/Inf in element ({i_elem_row_for_T}, {j_elem_col}). Skipping L2 error calculation.")
+                 print(f"Warning: Numerical solution contains NaN/Inf in element ({i_elem_row_for_T}, {j_elem_col}) at T={t_eval:.4f}. Skipping L2 error calculation for this case.")
                  return np.nan # Return NaN for the entire L2 error calculation
 
 
@@ -1149,7 +1363,20 @@ class SpaceTimeDG:
 
             # Sum the squared difference (u_h - u_exact)^2 weighted by quadrature weights and Jacobian
             integrand_sq = (u_h_quad - u_exact_quad)**2
+            # Check for NaNs/Infs in the integrand before summing
+            if np.any(np.isnan(integrand_sq)) or np.any(np.isinf(integrand_sq)):
+                 print(f"Warning: L2 error integrand contains NaN/Inf in element ({i_elem_row_for_T}, {j_elem_col}) at T={t_eval:.4f}. Skipping L2 error calculation for this case.")
+                 return np.nan # Return NaN for the entire L2 error calculation
+
+
             l2_error_sq += np.sum(integrand_sq * quad_weights_1d) * J_spatial_quad
+
+        # Final check before sqrt
+        if l2_error_sq < -1e-14 or not np.isfinite(l2_error_sq):
+            print(f"Warning: Invalid L2 error sum ({l2_error_sq:.3e}) before sqrt. Returning NaN.")
+            return np.nan
+        elif l2_error_sq < 0: # Clamp small negative values due to FP errors
+            l2_error_sq = 0.0
 
         l2_error = np.sqrt(l2_error_sq)
         # print(f"L2 Error at T={self.T:.4f} for Nx={Nx}, Nt={self.n_elements_temporal}: {l2_error:.6e}") # Moved print inside loop
@@ -1161,7 +1388,7 @@ if __name__ == "__main__":
     # --- Parameters ---
     # These parameters are for the initial run with plots and animation
     n_elements_spatial_initial = 20  # Number of spatial elements for initial run
-    n_elements_temporal_initial = 40 # Number of temporal elements for initial run (increased for stability)
+    n_elements_temporal_initial = 40 # Number of temporal elements for initial run (to ensure stability for P=1)
     # Note: The solve method forces p=1 as per original comment.
     # Setting poly_order here affects initialization details but solve() overrides p for execution.
     poly_order_init = 1 # This value is overridden by solve() to 1
@@ -1241,6 +1468,8 @@ if __name__ == "__main__":
     error_values = []
     # Store rates separately as they are computed
     computed_rates = []
+    # Store solution data at GLL nodes for comparison plot
+    gll_solutions_for_plotting = []
 
     # Define poly_order for the convergence study solvers (will be forced to 1)
     poly_order_conv = 1
@@ -1268,10 +1497,11 @@ if __name__ == "__main__":
         )
 
         # --- Solve the System for Convergence Study ---
+        # NOTE: The assemble_system and solve methods will print A, b, and U here.
         solver_conv.solve(f_init)
 
         # --- Calculate and Store Error ---
-        if solver_conv.u is not None: # Check if the solve was successful
+        if solver_conv.u is not None: # Only calculate error if solve was successful
             error = solver_conv.calculate_l2_error(f_init)
             if not np.isnan(error): # Store error only if calculation was successful (solve worked and error calculation found no NaNs)
                 h = domain_length / Nx_conv # Characteristic mesh size h = L/Nx
@@ -1285,25 +1515,47 @@ if __name__ == "__main__":
                     # Rate r = log(error_new / error_old) / log(h_new / h_old)
                     # Ensure h_new != h_old and error_old != 0 for log
                     if h != prev_h and prev_error != 0:
-                         rate = math.log(error / prev_error) / math.log(h / prev_h)
+                         # Add a small epsilon to error to avoid log(0) if error is machine zero
+                         rate = math.log((error + 1e-16) / (prev_error + 1e-16)) / math.log(h / prev_h)
                          computed_rates.append(rate)
                     else:
                          # Handle cases where h didn't change or previous error was zero (perfect solution?)
-                         computed_rates.append(float('inf')) # Or some other indicator if error didn't decrease
+                         # In a proper convergence study, h should always decrease, and error>0
+                         # If error is truly 0, rate is effectively infinite (perfect solution)
+                         computed_rates.append(float('inf'))
                 # First point has no previous rate, handle this by computed_rates list size check later
 
                 # Update previous values for the next iteration
                 prev_error = error
                 prev_h = h
+
+                # --- Store Solution Data for Comparison Plot ---
+                # We need to store the *final* solution evaluated at GLL nodes for this plot
+                x_plot_num_gll, u_plot_num_gll = solver_conv.get_solution_at_time_level(solver_conv.n_elements_temporal)
+                if x_plot_num_gll is not None:
+                     # Check for NaNs/Infs in the retrieved plot data before storing
+                     if np.any(np.isnan(x_plot_num_gll)) or np.any(np.isinf(x_plot_num_gll)) or \
+                        np.any(np.isnan(u_plot_num_gll)) or np.any(np.isinf(u_plot_num_gll)):
+                          print(f"Warning: GLL final solution data for Nx={Nx_conv} contains NaN/Inf after retrieval. Skipping storage for comparison plot.")
+                     else:
+                         gll_solutions_for_plotting.append({
+                             'Nx': Nx_conv,
+                             'x_plot': x_plot_num_gll,
+                             'u_plot': u_plot_num_gll
+                         })
+                else:
+                  print(f"Warning: GLL final solution data for Nx={Nx_conv} could not be retrieved for comparison plot.")
+
+
             else:
-                 print(f"Skipping error calculation for Nx={Nx_conv}, Nt={Nt_conv} due to failed solve or NaN error.")
+                 print(f"Skipping error calculation and solution storage for Nx={Nx_conv}, Nt={Nt_conv} due to failed solve or NaN error.")
                  # If a solve or error calculation failed, clear previous values to ensure rate calculation is sequential across *successful* runs
                  prev_error = None
                  prev_h = None
-                 # Do NOT append to nx_values, h_values, error_values if solve failed
+                 # Do NOT append to nx_values, h_values, error_values, gll_solutions_for_plotting if solve failed
 
         else:
-             print(f"Skipping error calculation for Nx={Nx_conv}, Nt={Nt_conv} because solve failed.")
+             print(f"Skipping error calculation and solution storage for Nx={Nx_conv}, Nt={Nt_conv} because solve failed.")
              # If solve failed, clear previous values
              prev_error = None
              prev_h = None
@@ -1325,7 +1577,8 @@ if __name__ == "__main__":
             # The first row doesn't have a preceding rate, and computed_rates has len=len(nx_values)-1
             if i > 0 and i - 1 < len(computed_rates):
                 rate = computed_rates[i-1]
-                rate_str = f'{rate:<15.4f}'
+                # Format rate, handle potential infinity if error became 0 (unlikely here)
+                rate_str = f'{rate:<15.4f}' if np.isfinite(rate) else f"{'Inf':<15}"
             else:
                 rate_str = f"{'N/A':<15}"
 
@@ -1333,6 +1586,60 @@ if __name__ == "__main__":
         print("-" * 50)
     else:
         print("\nNo data available to print convergence table (no successful solves).")
+
+    # --- Plot Solution Comparison ---
+    if gll_solutions_for_plotting: # Check the list containing GLL node data
+        print("\nGenerating comparison plot of numerical solutions at T...")
+        plt.figure(figsize=(10, 6))
+        ax = plt.gca() # Get current axes
+
+        # Plot exact solution once
+        x_exact_plot = np.linspace(0, domain_length, 200)
+        u_exact_plot_T = exact_solution(x_exact_plot, t_final, domain_length, advection_speed, f_init)
+        ax.plot(x_exact_plot, u_exact_plot_T, 'k--', label='Exact', linewidth=2) # Increased linewidth for clarity
+
+        # Plot numerical solutions from convergence study (GLL nodes)
+        # Sort solutions by Nx for consistent plotting order (coarsest to finest)
+        gll_solutions_for_plotting.sort(key=lambda item: item['Nx'])
+
+        # Define distinct styles (color, marker, linestyle) for each resolution
+        # Using common matplotlib markers and colors
+        markers = ['o', 's', 'D', '^', 'v', '*', 'X', 'P'] # Cycle through markers
+        colors = plt.cm.tab10.colors # Use a colormap for colors
+        linestyles = ['-', '--', '-.', ':'] # Cycle through linestyles
+
+        # Adjust base markersize for better visibility if needed
+        base_markersize = 6
+
+        for i, sol_data in enumerate(gll_solutions_for_plotting):
+            nx = sol_data['Nx']
+            # Assign style using modulo for cycling
+            color = colors[i % len(colors)]
+            marker = markers[i % len(markers)]
+            linestyle = linestyles[i % len(linestyles)]
+
+            # Plot using the stored GLL node data
+            # Use fillstyle='none' for open markers on refinement steps, matching the image
+            fillstyle = 'full' if i == 0 else 'none'
+
+            ax.plot(sol_data['x_plot'], sol_data['u_plot'],
+                    marker=marker, linestyle=linestyle, color=color,
+                    label=f'Numerical (Nx={nx})', fillstyle=fillstyle, markersize=base_markersize)
+
+
+        # Set plot properties
+        ax.set_title(f'Comparison of Numerical Solutions at t = {t_final:.4f} (P=1)', fontsize=ftSz1)
+        ax.set_xlabel('x', fontsize=ftSz2)
+        ax.set_ylabel('u(x, t)', fontsize=ftSz2)
+        ax.legend(fontsize=ftSz3) # Use slightly smaller font for multiple labels
+        ax.grid(True)
+        ax.set_xlim(0, domain_length)
+        ax.set_ylim(-1.1, 1.1)
+
+        plt.show()
+        print("Comparison plot finished.")
+    else:
+        print("\nNo numerical solutions collected for comparison plot.")
 
 
     # --- Plot Convergence ---
@@ -1346,22 +1653,26 @@ if __name__ == "__main__":
         # Add a reference line for the expected convergence rate p+1
         # For p=1, expected rate is 2
         if len(h_values) > 1:
-            # Pick the coarsest resolution point as a reference for the slope line
-            h_ref = h_values[0]
-            error_ref = error_values[0]
+            # Pick the coarsest resolution point among the *valid* h_values as a reference for the slope line
+            # Get the index of the largest h (coarsest mesh) in the valid set
+            idx_coarsest_valid = np.argsort(h_values)[-1] # Index for coarsest h
+            h_ref = h_values[idx_coarsest_valid]
+            error_ref = error_values[idx_coarsest_valid]
 
-            # Plot a reference line with slope (p+1) = 2
-            # y = C * h^2, log(y) = log(C) + 2 * log(h)
-            # Choose C such that it passes through (h_ref, error_ref)
-            # error_ref = C * h_ref^2 => C = error_ref / h_ref^2
-            h_plot_ref = np.array([h_values[-1], h_values[0]]) # Plot line over the range of computed h
+
+            # Plot line over the range of computed h (from smallest to largest h)
+            h_plot_ref = np.array([min(h_values), max(h_values)]) # Plot line over the range of computed h
             # Get the actual p used in the solver instances (which is 1)
             # This relies on the last successful solver instance's p value.
             # Since p is forced to 1 inside solve(), this should be 1.
             rate_expected = 1 + 1 # Expected rate is p+1 = 1+1 = 2 for L2 error with P=1 basis
-            error_plot_ref = error_ref * (h_plot_ref / h_ref)**rate_expected
-
-            plt.loglog(h_plot_ref, error_plot_ref, 'k--', label=f'Order $O(h^{rate_expected})$ Reference')
+            # Ensure error_ref is not zero or too small for log scale calculation
+            if error_ref > 1e-16:
+                 C_ref = error_ref / (h_ref**rate_expected)
+                 error_plot_ref = C_ref * h_plot_ref**rate_expected
+                 plt.loglog(h_plot_ref, error_plot_ref, 'k--', label=f'Order $O(h^{rate_expected})$ Reference')
+            else:
+                 print("Warning: Reference error is zero or too small, skipping order reference line.")
 
 
         plt.title(f'Convergence Plot ($L_2$ Error at T={t_final:.1f}, P=1)', fontsize=ftSz1)
