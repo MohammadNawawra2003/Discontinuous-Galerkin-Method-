@@ -145,6 +145,19 @@ The Local Time Derivative Update:
 
 ![](https://latex.codecogs.com/png.image?\dpi{150}\fn_cm%20%7B%5Ccolor%7Bwhite%7D%20%5Cfrac%7BdU_k%7D%7Bdt%7D%20%3D%20M_k%5E%7B-1%7D%20R_k(U)%20%3D%20%5Cfrac%7B2%7D%7B%5CDelta%20x%7D%20%5Cbegin%7Bpmatrix%7D%202%20%26%20-1%20%5C%5C%20-1%20%26%202%20%5Cend%7Bpmatrix%7D%20R_k(U)%7D)
 
+The large linear system used in STDG is expressed as:
+AU = b
+
+Vector U:
+![](https://latex.codecogs.com/png.image?\dpi{150}\bg_black\fn_cm%20U%20%3D%20%5Cbegin%7Bpmatrix%7D%20U_%7B0%2C0%7D%20%5C%5C%20U_%7B0%2C1%7D%20%5C%5C%20%5Cvdots%20%5C%5C%20U_%7B0%2CN_x-1%7D%20%5C%5C%20U_%7B1%2C0%7D%20%5C%5C%20%5Cvdots%20%5C%5C%20U_%7BN_t-1%2CN_x-1%7D%20%5Cend%7Bpmatrix%7D)
+
+Vector b:
+![](https://latex.codecogs.com/png.image?\dpi{150}\bg_black\fn_cm%20b%20%3D%20%5Cbegin%7Bpmatrix%7D%20b_%7B0%2C0%7D%20%5C%5C%20b_%7B0%2C1%7D%20%5C%5C%20%5Cvdots%20%5C%5C%20b_%7B0%2CN_x-1%7D%20%5C%5C%200%20%5C%5C%20%5Cvdots%20%5C%5C%200%20%5Cend%7Bpmatrix%7D)
+
+Matrix A:
+![](https://latex.codecogs.com/png.image?\dpi{150}\bg_black\fn_cm%20A%20%3D%20%5Cbegin%7Bpmatrix%7D%20A_%7B0%2C0%7D%20%26%200%20%26%200%20%26%20%5Ccdots%20%26%200%20%5C%5C%20A_%7B1%2C0%7D%20%26%20A_%7B1%2C1%7D%20%26%200%20%26%20%5Ccdots%20%26%200%20%5C%5C%200%20%26%20A_%7B2%2C1%7D%20%26%20A_%7B2%2C2%7D%20%26%20%5Ccdots%20%26%200%20%5C%5C%20%5Cvdots%20%26%20%5Cvdots%20%26%20%5Cvdots%20%26%20%5Cddots%20%26%20%5Cvdots%20%5C%5C%200%20%26%200%20%26%200%20%26%20%5Ccdots%20%26%20A_%7BN_t-1%2CN_t-1%7D%20%5Cend%7Bpmatrix%7D)
+
+
 
 Discontinuous Galerkin Method
 --------------------
