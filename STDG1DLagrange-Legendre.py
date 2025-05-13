@@ -28,6 +28,8 @@ import math
 from mpl_toolkits.mplot3d import Axes3D
 # --- Import for live animation ---
 import matplotlib.animation as animation
+# --- Import for 2D heatmap plotting ---
+import matplotlib.cm as cm
 
 # --- Matplotlib Global Settings ---
 ftSz1, ftSz2, ftSz3 = 20, 17, 14
@@ -168,7 +170,7 @@ class SpaceTimeDG:
                  raise NotImplementedError(f"GLL nodes not implemented for poly_order p={p} > 3.")
 
 
-        # Create 2D tensor product nodes for reference element [-1, 1]^2
+        # Create 2D tensor product nodes for reference element [-1, 1] ^ 2
         self.ref_nodes_x, self.ref_nodes_t = np.meshgrid(self.ref_nodes_1d, self.ref_nodes_1d)
         self.ref_nodes_x = self.ref_nodes_x.flatten()
         self.ref_nodes_t = self.ref_nodes_t.flatten()
@@ -405,6 +407,35 @@ class SpaceTimeDG:
         tuple
             (A, b) where A is the system matrix and b is the right-hand side
         """
+        """
+        ✅ Technical Tasks
+
+        1.  **Matrix Structure Optimization**
+
+            *   Your global matrix $A$ is block lower triangular (as seen in the image).
+            *   Instead of building the full global system, **solve block-by-block**:
+
+                *   Solve for $U_0$ using $A_0 U_0 = b_0$,
+                *   Use $U_0$ to construct the RHS of the next block,
+                *   Continue this recursively.
+            *   This **saves memory and compute time**.
+
+            NOTE: The current implementation builds the *full* sparse matrix A. The block-by-block solution is a suggested optimization not yet implemented here.
+
+        5.  **Loop Handling**
+
+            *   If solving each timestep separately (space method), ensure the loop **reuses matrices** as much as possible.
+            *   If solving all timesteps together (space-time method), exploit **sparse structures** and avoid building full matrices.
+
+            NOTE: This implementation uses sparse structures (scipy.sparse) for the full space-time matrix.
+
+        2.  **Boundary Conditions**
+
+            *   Clarify if you're using **periodic** or **Dirichlet** boundary conditions.
+            *   If **periodic**, then update the matrix $A$ to include wrap-around terms (top-right and bottom-left blocks).
+
+            NOTE: This implementation uses PERIODIC boundary conditions in space, which is handled by coupling the last element to the first on the left face.
+        """
         Nx = self.n_elements_spatial
         Nt = self.n_elements_temporal
         p = self.p
@@ -437,6 +468,9 @@ class SpaceTimeDG:
 
 
         # Loop over space-time elements
+        # ✅ Script Annotation: Add clear comments like:
+        # Assembly of global system matrix A
+        # Looping over all elements and time slabs
         for i in tqdm(range(Nt), desc="Temporal Elements"): # time element index (0 to Nt-1)
             for j in range(Nx):  # space element index (0 to Nx-1)
                 # Element indices
@@ -607,6 +641,7 @@ class SpaceTimeDG:
                     # Spatial Left Face (xi = -1): ∫_{left} -a u^* psi_l dS_x
                     # dS_x = (dt_phys/2) deta
                     if j == 0: # Left spatial boundary, neighbor is element (i, Nx-1) due to periodic BC
+                        # This adds wrap-around coupling terms to the matrix
                         neighbor_elem_idx_global = i * Nx + (Nx - 1)
                     else: # Interior left face, neighbor is element (i, j-1)
                         neighbor_elem_idx_global = i * Nx + (j - 1)
@@ -643,18 +678,23 @@ class SpaceTimeDG:
         print("\n--- Global System Matrix (A) ---")
         print(f"Matrix size: {A.shape[0]}x{A.shape[1]} (sparse, CSR format)")
         # Print a representation of the sparse matrix. Default print shows non-zero entries.
-        if A.shape[0] <= 20:
+        # The printout for a sparse matrix shows (row, col) value for non-zero entries.
+        # This IS the full representation of the sparse matrix, not the dense one.
+        # Printing the dense matrix A.todense() would consume huge memory for large systems.
+        # Showing snippets below is done if the matrix is very large to avoid overwhelming output.
+        if A.shape[0] <= 20: # Adjusted threshold for printing full sparse representation
              print(A)
         else:
-             print(f"Matrix is too large ({A.shape[0]}x{A.shape[1]}) to print in full. Showing a snippet of non-zero entries:")
-             # Sparse matrix printing usually shows (row, col) value
-             print(A[:min(A.shape[0], 30), :min(A.shape[1], 30)]) # Print top-left corner non-zeros up to a limit
+             print(f"Matrix is too large ({A.shape[0]}x{A.shape[1]}) to print the full non-zero list easily. Showing a snippet of non-zero entries from the top-left corner:")
+             # Print non-zero entries from the top-left block for illustration
+             # Accessing a sparse matrix slice might convert to a small dense matrix, which is fine for snippets.
+             print(A[:min(A.shape[0], 4*(self.n_nodes_per_element)), :min(A.shape[1], 4*(self.n_nodes_per_element))]) # Show first few block rows/cols
              print("...")
 
         print("\n--- Global Right-Hand Side Vector (b) ---")
         print(f"Vector size: {b.shape[0]}")
         # Print snippets for large vectors
-        if b.shape[0] <= 20:
+        if b.shape[0] <= 20: # Adjusted threshold for printing full vector
             print(b)
         else:
             print(f"Vector is too large ({b.shape[0]}) to print in full. Showing snippet: {b[0:10]} ... {b[-10:]}")
@@ -672,7 +712,33 @@ class SpaceTimeDG:
         f_init : function
             Initial condition function
         """
+        """
+        ✅ Technical Tasks
+
+        1.  **Matrix Structure Optimization**
+
+            *   Your global matrix $A$ is block lower triangular (as seen in the image).
+            *   Instead of building the full global system, **solve block-by-block**:
+
+                *   Solve for $U_0$ using $A_0 U_0 = b_0$,
+                *   Use $U_0$ to construct the RHS of the next block,
+                *   Continue this recursively.
+            *   This **saves memory and compute time**.
+
+            NOTE: This method currently builds the full matrix A and solves it directly using spsolve.
+            It **does NOT** solve block-by-block. Solving block-by-block would require implementing a separate solver logic that iterates through time rows (i=0, 1, ..., Nt-1), solving a smaller system for U_{i,:} at each step using the already computed U_{i-1,:}. This would indeed be more memory efficient as only block matrices A_{i,i}, A_{i,i-1} and vectors b_{i,:}, U_{i-1,:} (and spatial neighbor information) would need to be in memory at any given time step 'i'.
+
+        ✅ Advanced (if you have time)
+
+        8.  **Preconditioned Solvers**
+
+            *   If your system grows large (in space-time), consider **iterative solvers** (e.g., GMRES) with **block preconditioners**.
+
+            NOTE: This method currently uses a direct sparse solver (`spsolve`).
+        """
         # --- Set poly_order to 1 and update element counts as specified in main ---
+        # These parameters are for the initial run with plots and animation
+        # and the convergence study.
         # The __init__ now takes separate counts, so we use those.
         # The value from __init__ is used here.
         # However, the note in the prompt specifically says "poly_order p=1",
@@ -926,6 +992,32 @@ class SpaceTimeDG:
         show_plot : bool, optional
             Whether to display the plot using plt.show(). Defaults to True.
         """
+        """
+        ✅ Documentation & Presentation Tasks
+
+        6.  **Plotting & Reporting**
+
+            *   Show:
+
+                *   Comparison between `N` values (refinement level),
+                *   Differences between methods in plots,
+                *   Convergence rate plot (log-log of error vs. $h$),
+            *   Consider combining plots in subplots for clarity.
+
+            NOTE: This function generates a single plot for one timestep. The comparison and convergence plots are handled later in the main block.
+
+        ✅ Code Cleanup and Efficiency
+
+        4.  **Avoid Full 3D Surface Plots**
+
+            *   As discussed, avoid surface plots unless necessary.
+            *   Instead, use:
+
+                *   **2D heatmaps** (`imshow` or `pcolormesh` in Matplotlib),
+                *   Include colorbars to show intensity (solution value).
+
+            NOTE: This function generates a 2D plot slice, which is consistent with the suggestion for visualization. The 3D plot function is separate.
+        """
         # Check if time_step_idx is valid
         if not (0 <= time_step_idx <= self.n_elements_temporal):
              print(f"Error: Invalid time_step_idx ({time_step_idx}) provided for plot_solution. Must be between 0 and {self.n_elements_temporal}.")
@@ -1019,6 +1111,19 @@ class SpaceTimeDG:
         plot_dir : str, optional
             Directory to save the plot. Defaults to current directory.
         """
+        """
+        ✅ Code Cleanup and Efficiency
+
+        4.  **Avoid Full 3D Surface Plots**
+
+            *   As discussed, avoid surface plots unless necessary.
+            *   Instead, use:
+
+                *   **2D heatmaps** (`imshow` or `pcolormesh` in Matplotlib),
+                *   Include colorbars to show intensity (solution value).
+
+            NOTE: This function generates a 3D plot, which is explicitly suggested to potentially avoid in the task list due to rendering cost/clarity for complex data. It is kept here as it was part of the original code structure.
+        """
         if self.u is None:
              print("Cannot generate 3D surface plot: Solution vector self.u is not available (solve failed?).")
              return
@@ -1095,6 +1200,191 @@ class SpaceTimeDG:
         plt.show()
 
 
+    # --- ADDED: Method to plot the 2D heatmap ---
+    def plot_heatmap_2d(self, points_per_element=20, plot_dir="."):
+        """
+        Plots the numerical solution u(x,t) as a 2D heatmap.
+        Evaluates the solution on a refined grid within each space-time element.
+
+        Parameters:
+        -----------
+        points_per_element : int, optional
+            Number of evaluation points per dimension within each element.
+            Defaults to 20.
+        plot_dir : str, optional
+            Directory to save the plot. Defaults to current directory.
+        """
+        """
+        ✅ Code Cleanup and Efficiency
+
+        4.  **Avoid Full 3D Surface Plots**
+
+            *   As discussed, avoid surface plots unless necessary.
+            *   Instead, use:
+
+                *   **2D heatmaps** (`imshow` or `pcolormesh` in Matplotlib),
+                *   Include colorbars to show intensity (solution value).
+
+            NOTE: This is the requested 2D heatmap plot function.
+        """
+        if self.u is None:
+             print("Cannot generate 2D heatmap plot: Solution vector self.u is not available (solve failed?).")
+             return
+
+        print("Generating 2D heatmap plot of u(x,t)...")
+
+        Nx = self.n_elements_spatial
+        Nt = self.n_elements_temporal
+        N_eval = points_per_element # Points per element per dimension for evaluation
+
+        # Prepare arrays to hold evaluated solution values and corresponding physical coordinates
+        # u_h_values will be a 2D array (Nt * N_eval) x (Nx * N_eval)
+        u_h_heatmap_data = np.zeros((Nt * N_eval, Nx * N_eval))
+        x_coords_heatmap = np.zeros((Nt * N_eval, Nx * N_eval))
+        t_coords_heatmap = np.zeros((Nt * N_eval, Nx * N_eval))
+
+
+        # Evaluation points in the reference element [-1, 1]^2
+        xi_eval_1d = np.linspace(-1.0, 1.0, N_eval)
+        eta_eval_1d = np.linspace(-1.0, 1.0, N_eval)
+        xi_grid_ref, eta_grid_ref = np.meshgrid(xi_eval_1d, eta_eval_1d)
+
+        # Flatten reference grids for passing to evaluate_element_solution
+        xi_flat_ref = xi_grid_ref.flatten()
+        eta_flat_ref = eta_grid_ref.flatten()
+
+        # Loop over elements and evaluate the solution on the dense grid
+        for i in tqdm(range(Nt), desc="Evaluating for Heatmap"): # time element index
+            for j in range(Nx):  # space element index
+                # Evaluate the solution u_h within element (i, j) at the dense reference points
+                # evaluate_element_solution expects flattened xi and eta, and returns flattened u_h
+                u_h_elem_flat = self.evaluate_element_solution(i, j, xi_flat_ref, eta_flat_ref)
+
+                if np.any(np.isnan(u_h_elem_flat)):
+                     print(f"Warning: NaN detected in element ({i}, {j}) during heatmap evaluation. Skipping this element.")
+                     continue # Skip if evaluation failed for this element
+
+
+                # Reshape the evaluated u_h values back to a 2D grid for this element block
+                u_h_elem_grid = u_h_elem_flat.reshape((N_eval, N_eval))
+
+                # Store this element's data in the overall heatmap data array
+                # Note: np.meshgrid creates grids such that grid_x[:, k] is constant, grid_y[k, :] is constant.
+                # If xi corresponds to columns and eta to rows in the element block, then u_h_elem_grid
+                # should be indexed u_h_elem_grid[eta_idx, xi_idx].
+                # When assigning to the global array, time (i * N_eval : (i+1) * N_eval) corresponds to rows,
+                # space (j * N_eval : (j+1) * N_eval) corresponds to columns.
+                u_h_heatmap_data[i * N_eval : (i+1) * N_eval, j * N_eval : (j+1) * N_eval] = u_h_elem_grid # Assuming eta is row-like, xi is col-like
+
+
+                # Calculate physical coordinates for this element block
+                x_left = self.x_elements[j]
+                x_right = self.x_elements[j+1]
+                t_bottom = self.t_elements[i]
+                t_top = self.t_elements[i+1]
+
+                # Map 1D reference points to physical coordinates for this element
+                x_phys_1d_elem = 0.5 * (x_right - x_left) * (xi_eval_1d + 1) + x_left
+                t_phys_1d_elem = 0.5 * (t_top - t_bottom) * (eta_eval_1d + 1) + t_bottom
+
+                # Create 2D physical coordinate grids for this element block
+                x_phys_elem_grid, t_phys_elem_grid = np.meshgrid(x_phys_1d_elem, t_phys_1d_elem)
+
+                # Store physical coordinates (needed for pcolormesh axes, potentially)
+                x_coords_heatmap[i * N_eval : (i+1) * N_eval, j * N_eval : (j+1) * N_eval] = x_phys_elem_grid
+                t_coords_heatmap[i * N_eval : (i+1) * N_eval, j * N_eval : (j+1) * N_eval] = t_phys_elem_grid
+
+
+        # Create the heatmap plot
+        fig, ax = plt.subplots(figsize=(10, 8)) # Adjusted size for potentially taller time axis
+
+
+        # Use pcolormesh. Need the boundaries of the cells.
+        # The evaluation points `linspace(-1, 1, N_eval)` define N_eval-1 intervals.
+        # So we need N_eval+1 boundary points in each dimension for the element.
+        # Physical boundaries for pcolormesh:
+        # x boundaries: Combine x_elements with N_eval-1 points interpolated within each element
+        # t boundaries: Combine t_elements with N_eval-1 points interpolated within each element
+        # This is complex. A simpler approach for pcolormesh is to provide the grid *centers* (our evaluation points)
+        # and let matplotlib handle the shading mode. Or, generate N_eval+1 points directly for pcolormesh boundaries.
+
+        # Let's generate N_eval+1 points to use as cell boundaries for pcolormesh
+        xi_boundary_1d = np.linspace(-1.0, 1.0, N_eval + 1)
+        eta_boundary_1d = np.linspace(-1.0, 1.0, N_eval + 1)
+
+        # Construct the full physical boundary grids for pcolormesh
+        # X_boundaries will be (Nt * N_eval + 1) x (Nx * N_eval + 1)
+        # Y_boundaries will be (Nt * N_eval + 1) x (Nx * N_eval + 1)
+        # Z_values (u_h_heatmap_data) is (Nt * N_eval) x (Nx * N_eval)
+
+        # Need the physical coordinates of all boundary points
+        x_boundaries_all = []
+        for j in range(Nx):
+             x_left = self.x_elements[j]
+             x_right = self.x_elements[j+1]
+             x_boundaries_elem = 0.5 * (x_right - x_left) * (xi_boundary_1d + 1) + x_left
+             if j == 0:
+                 x_boundaries_all.extend(x_boundaries_elem.tolist()) # Keep the first element's boundaries
+             else:
+                 # For subsequent elements, skip the first boundary (which is the last of the previous element)
+                 x_boundaries_all.extend(x_boundaries_elem[1:].tolist())
+
+        t_boundaries_all = []
+        for i in range(Nt):
+             t_bottom = self.t_elements[i]
+             t_top = self.t_elements[i+1]
+             t_boundaries_elem = 0.5 * (t_top - t_bottom) * (eta_boundary_1d + 1) + t_bottom
+             if i == 0:
+                 t_boundaries_all.extend(t_boundaries_elem.tolist())
+             else:
+                  t_boundaries_all.extend(t_boundaries_elem[1:].tolist())
+
+        # Create the 2D grid of boundary coordinates
+        X_boundaries, T_boundaries = np.meshgrid(np.array(x_boundaries_all), np.array(t_boundaries_all))
+
+        # Now u_h_heatmap_data should align with cells defined by these boundaries
+        # The evaluated points were cell centers or point values. pcolormesh with boundary grids
+        # expects the data C to be (M, N) where boundaries X, Y are (M+1, N+1).
+        # Our u_h_heatmap_data is (Nt * N_eval) x (Nx * N_eval).
+        # Our boundary grids are (Nt * N_eval + 1) x (Nx * N_eval + 1). This matches.
+
+        # Add check for NaNs before plotting
+        if np.any(np.isnan(u_h_heatmap_data)) or np.any(np.isinf(u_h_heatmap_data)):
+             print("Warning: Heatmap data contains NaN or Inf values, skipping heatmap plot.")
+             plt.close(fig) # Close the figure
+             return
+
+        # Using pcolormesh with the calculated boundaries and data
+        c = ax.pcolormesh(X_boundaries, T_boundaries, u_h_heatmap_data, shading='flat', cmap=cm.viridis)
+
+        # Add labels and title
+        ax.set_xlabel('x', fontsize=ftSz2)
+        ax.set_ylabel('t', fontsize=ftSz2)
+        ax.set_title('Numerical Solution u(x,t) Heatmap (Space-Time DG, P=1)', fontsize=ftSz1)
+
+        # Add a color bar
+        fig.colorbar(c, ax=ax, label='u')
+
+        # Set axis limits
+        ax.set_xlim(0, self.L)
+        ax.set_ylim(0, self.T) # Time limits should match [0, T]
+
+        # Invert t-axis to show t=0 at the bottom
+        ax.invert_yaxis()
+
+
+        # Save plot (only if plot_dir is provided and not None/empty string)
+        if plot_dir and plot_dir != ".":
+             if not os.path.exists(plot_dir):
+                 os.makedirs(plot_dir)
+             plot_filename_heatmap = os.path.join(plot_dir, 'solution_2d_heatmap.png')
+             plt.savefig(plot_filename_heatmap, bbox_inches='tight')
+             print(f"2D heatmap plot saved to {plot_filename_heatmap}")
+
+        # Display the plot
+        plt.show()
+
+
     # --- ADDED: Method to create live animation ---
     def live_animate_solution(self, f_init, interval_ms=50):
         """
@@ -1106,6 +1396,32 @@ class SpaceTimeDG:
             Initial condition function (needed for exact solution).
         interval_ms : int, optional
             Delay between frames in milliseconds. Defaults to 50ms.
+        """
+        """
+        ✅ Documentation & Presentation Tasks
+
+        6.  **Plotting & Reporting**
+
+            *   Show:
+
+                *   Comparison between `N` values (refinement level),
+                *   Differences between methods in plots,
+                *   Convergence rate plot (log-log of error vs. $h$),
+            *   Consider combining plots in subplots for clarity.
+
+            NOTE: This function generates an animation showing the solution evolution, which is a form of visualization for reporting.
+
+        ✅ Code Cleanup and Efficiency
+
+        4.  **Avoid Full 3D Surface Plots**
+
+            *   As discussed, avoid surface plots unless necessary.
+            *   Instead, use:
+
+                *   **2D heatmaps** (`imshow` or `pcolormesh` in Matplotlib),
+                *   Include colorbars to show intensity (solution value).
+
+            NOTE: This animation uses 2D plots at each time step, which is consistent with the suggestion for visualization.
         """
         if self.u is None:
              print("Cannot create live animation: Solution vector self.u is not available (solve failed?).")
@@ -1131,7 +1447,7 @@ class SpaceTimeDG:
         x_exact_plot = np.linspace(0, self.L, 200)
         # Plot initial exact solution to create the exact line object
         u_exact_plot_initial = exact_solution(x_exact_plot, self.t_elements[0], self.L, self.a, f_init)
-        line_exact, = ax.plot(x_exact_plot, u_exact_plot_initial, 'k--', label='Exact')
+        line_exact, = ax.plot(x_exact_plot, u_exact_plot_initial, 'k--', label='Exact', linewidth=2) # Increased linewidth for clarity
 
 
         # Set plot limits and labels
@@ -1297,6 +1613,20 @@ class SpaceTimeDG:
         float
             The L2 error at the final time T. Returns np.nan if solve failed.
         """
+        """
+        ✅ Documentation & Presentation Tasks
+
+        6.  **Plotting & Reporting**
+
+            *   Show:
+
+                *   Comparison between `N` values (refinement level),
+                *   Differences between methods in plots,
+                *   Convergence rate plot (log-log of error vs. $h$),
+            *   Consider combining plots in subplots for clarity.
+
+            NOTE: This function provides the error value needed for the convergence rate plot.
+        """
         if self.u is None:
              print("Warning: Solution vector self.u is not available. Cannot calculate L2 error.")
              return np.nan
@@ -1385,6 +1715,33 @@ class SpaceTimeDG:
 
 # --- Main Execution ---
 if __name__ == "__main__":
+    """
+    ✅ Documentation & Presentation Tasks
+
+    6.  **Plotting & Reporting**
+
+        *   Show:
+
+            *   Comparison between `N` values (refinement level),
+            *   Differences between methods in plots,
+            *   Convergence rate plot (log-log of error vs. $h$),
+        *   Consider combining plots in subplots for clarity.
+
+        NOTE: This main block orchestrates the plotting and reporting, including the comparison and convergence plots.
+
+    ✅ Technical Tasks
+
+    3.  **Comparison of Space vs. Space-Time Methods**
+
+        *   Compare both methods in terms of:
+
+            *   **Accuracy** (convergence plot),
+            *   **Computation time** (runtime or FLOPs),
+            *   **Stability** (how solution behaves for longer time).
+        *   You already mentioned the convergence plot shows $\mathcal{O}(h^2)$, which is good.
+
+        NOTE: This section implements the accuracy comparison via a convergence study and visual comparison plots. Runtime comparison is not yet implemented here.
+    """
     # --- Parameters ---
     # These parameters are for the initial run with plots and animation
     n_elements_spatial_initial = 20  # Number of spatial elements for initial run
@@ -1445,6 +1802,11 @@ if __name__ == "__main__":
 
         # --- Plot the 3D surface ---
         solver_initial.plot_surface_3d(plot_dir=plot_dir_static)
+
+        # --- ADDED: Plot the 2D heatmap ---
+        # This plots the solution u(x,t) over the entire space-time domain [0,L]x[0,T]
+        solver_initial.plot_heatmap_2d(points_per_element=20, plot_dir=plot_dir_static) # Evaluate on a 20x20 grid per element
+
 
         # --- ADDED: Create LIVE Animation ---
         # This will create a separate Matplotlib window and display the animation
