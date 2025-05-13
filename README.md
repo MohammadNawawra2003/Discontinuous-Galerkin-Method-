@@ -122,6 +122,10 @@ Comparison of Numerical Solutions at t =1.0000 (P=1):
 Numerical Solution u(x,t) Surface (Space-Time DG, P=1):
 ![Numerical Solution u(x,t) Surface (Space-Time DG, P=1)](https://github.com/user-attachments/assets/ef5797a9-a791-4876-8f9b-4b42e25065cd)
 
+Numerical Solution u(x,t) Heatmap (Space-Tme DG, P: 1) 2D:
+![Numerical Solution u(x,t) Heatmap (Space-Time DG, P=1) 2D](https://github.com/user-attachments/assets/e8edd81f-23ed-44b4-9731-329a9e343d98)
+
+
   n    |    h       |   L2 Error   | Approx. Rate
 -------|------------|--------------|--------------
    10  | 1.0000e-01 | 2.288621e-02 |     -
